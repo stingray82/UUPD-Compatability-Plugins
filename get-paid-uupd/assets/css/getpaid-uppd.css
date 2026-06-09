@@ -1,0 +1,283 @@
+/* Layout container – make it wider and give side padding */
+.gpd-account {
+    max-width: 1120px;          /* was 820px */
+    margin: 0 auto;
+    padding: 0 1.5rem;          /* adds some breathing room on the sides */
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* Card – slightly more padding and spacing between cards */
+.gpd-card {
+    background: #fff;
+    border-radius: 14px;
+    padding: 1.9rem 2.1rem;     /* was 1.5rem 1.75rem */
+    box-shadow: 0 10px 25px rgba(15,23,42,.06);
+    margin-bottom: 2rem;        /* was 1.5rem */
+}
+
+/* Headers */
+.gpd-card__header {
+    margin-bottom: 1.25rem;     /* give titles a bit more space from content */
+}
+
+.gpd-page-title {
+    font-size: 1.7rem;          /* tiny bump */
+    font-weight: 600;
+    margin: 0;
+}
+
+.gpd-section-title {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin: 0 0 0.5rem;
+}
+
+/* Pills / badges / buttons – mostly the same */
+.gpd-pill {
+    display: inline-block;
+    padding: 0.25rem 0.9rem;
+    border-radius: 999px;
+    background: #0f172a;
+    color: #fff;
+    font-size: 0.85rem;
+}
+
+.gpd-pill--wide {
+    padding-inline: 1.1rem;
+}
+
+.gpd-badge {
+    display: inline-block;
+    padding: 0.2rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    background: #e5e7eb;
+    color: #111827;
+    margin-left: 0.5rem;
+}
+
+.gpd-badge--status {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.gpd-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.45rem 1.1rem;   /* slightly larger */
+    border-radius: 999px;
+    font-size: 0.95rem;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+}
+
+.gpd-button--primary {
+    background: #111827;
+    color: #fff;
+}
+
+.gpd-link {
+    color: #111827;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    font-size: 0.9rem;
+}
+
+.gpd-link--danger {
+    color: #b91c1c;
+}
+
+/* Layout bits – open up the grid and make columns wider */
+.gpd-product-card__body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); /* left column a bit wider */
+    gap: 2rem;                                              /* was 1.25rem */
+}
+
+@media (max-width: 768px) {
+    .gpd-product-card__body {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 1.25rem;
+    }
+}
+
+/* Definition list – less “grouped up” */
+.gpd-definition-list {
+    margin: 0;
+}
+
+.gpd-definition-list__row {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.55rem 0;          /* was 0.35rem */
+    border-bottom: 1px solid #e5e7eb; /* slightly more visible divider */
+    font-size: 0.98rem;          /* bit larger */
+}
+
+.gpd-definition-list__row:last-child {
+    border-bottom: none;         /* avoids extra line at bottom */
+}
+
+.gpd-definition-list__row dt {
+    font-weight: 500;
+    color: #6b7280;
+}
+
+.gpd-definition-list__row dd {
+    margin: 0;
+    text-align: right;
+}
+
+/* List of licenses/downloads – more vertical space */
+.gpd-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.gpd-list__item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.65rem 0;          /* was 0.45rem */
+    border-bottom: 1px solid #e5e7eb;
+    font-size: 0.98rem;
+}
+
+.gpd-list__item:last-child {
+    border-bottom: none;
+}
+
+/* Empty state text */
+.gpd-empty {
+    margin: 0.3rem 0;
+    font-size: 0.9rem;
+    color: #6b7280;
+}
+
+/* Purchases table spacing */
+.gpd-table--purchases th,
+.gpd-table--purchases td {
+    padding: 0.6rem 1rem;
+}
+
+/* Make the action columns a bit wider so links don't sit on top of each other */
+.gpd-table--purchases th:nth-child(3),
+.gpd-table--purchases th:nth-child(4),
+.gpd-table--purchases th:nth-child(5),
+.gpd-table--purchases td:nth-child(3),
+.gpd-table--purchases td:nth-child(4),
+.gpd-table--purchases td:nth-child(5) {
+    white-space: nowrap;
+    padding-right: 1.5rem;
+}
+
+/* ---------------------------------------------
+   PRODUCTS SECTION IMPROVEMENTS
+----------------------------------------------*/
+
+/* Base section titles in cards */
+.gpd-card__header .gpd-section-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+
+/* Products heading – match Order Summary */
+.gpd-card__header .gpd-section-title--products,
+.gpd-card__header .gpd-section-title.gpd-section-title--products {
+    font-size: 1.7rem;   /* same as Order Summary */
+    font-weight: 600;
+    margin-bottom: 1rem;
+}
+
+/* Product row: align product name and price on same line */
+.gpd-table--products td {
+    vertical-align: top;
+    padding: 0.7rem 1rem;
+    font-size: 1rem;      /* normalize table font size */
+}
+
+.gpd-product-name-cell {
+    width: 70%;
+}
+
+.gpd-product-price {
+    text-align: right;
+    white-space: nowrap;
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+/* Product name a bit larger */
+.gpd-product-name {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+}
+
+/* Download list (slightly bigger & more readable) */
+.gpd-download-list-inline {
+    list-style: none;
+    margin: 0.3rem 0 0;
+    padding-left: 0;      /* no bullet indentation */
+}
+
+.gpd-download-list-inline li {
+    margin: 0 0 0.35rem;
+}
+
+.gpd-download-link {
+    font-size: 0.95rem;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    color: #0f172a;       /* dark navy for consistency */
+}
+
+/* ---------------------------------------------
+   LICENSE KEYS ROW LAYOUT
+----------------------------------------------*/
+
+/* Whole row behaves like other rows, but dd can stretch */
+.gpd-definition-list__row--license {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* Let the cell fill width and left-align contents */
+.gpd-definition-list__row--license dd {
+    width: 100%;
+    text-align: left;      /* override global right-align */
+}
+
+/* One line per license: item name left, pill right */
+.gpd-license-inline-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 0.25rem 0;
+}
+
+/* Item name under "License Keys:" on the left */
+.gpd-license-item-name {
+    font-weight: 500;
+    font-size: 0.97rem;
+}
+
+/* Keep the pill on the far right */
+.gpd-license-key-wrapper {
+    display: flex;
+    justify-content: flex-end;
+    flex: 1;
+}
+
+.gpd-license-key-pill {
+    margin-left: 1rem;
+}
+
+/* Nicer "copied" state for license pill */
+.gpd-pill--copied {
+    background: #16a34a;
+}

@@ -1,0 +1,1 @@
+/wp-admin/edit.php?post_type=downloads&uupd_hoster_vendor=rup
