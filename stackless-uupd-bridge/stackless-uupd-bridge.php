@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Stackless → UUPD Compatibility Bridge
  * Description: UUPD-compatible licensing and metadata endpoints backed by Stackless Software Licensing, plus product bootloader generator.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Requires PHP: 7.4
  * Requires Plugins: woocommerce
  * License: GPL-2.0-or-later
@@ -12,7 +12,7 @@ defined('ABSPATH') || exit;
 
 if (!class_exists('Stackless_UUPD_Bridge')) {
 final class Stackless_UUPD_Bridge {
-    const VERSION = '1.0.0';
+    const VERSION = '1.0.1';
     const NS = 'uupd/v1';
     const META_PREFIX = '_stackless_uupd_';
 
@@ -104,6 +104,22 @@ final class Stackless_UUPD_Bridge {
         // Do not add a second deactivate: the bundled UUPD UI deliberately does that itself.
         $response = self::stackless($action, $params);
         if (is_wp_error($response)) { return $response; }
+        // Deactivation is idempotent: an already-absent site activation is a
+        // successful end state for UUPD. Do not hide invalid-key, invalid-site,
+        // authorization, or other Stackless errors.
+        if ($action === 'deactivate' && $response instanceof WP_REST_Response
+            && (int) $response->get_status() === 404) {
+            $body = $response->get_data();
+            if (is_array($body) && ($body['code'] ?? '') === 'site_not_active') {
+                $response = new WP_REST_Response([
+                    'success' => true,
+                    'code' => 'already_deactivated',
+                    'message' => 'This site was not activated; the local license can be cleared.',
+                    'status' => 'inactive',
+                    'site_active' => false,
+                ], 200);
+            }
+        }
         return self::translate($response, $action);
     }
 
