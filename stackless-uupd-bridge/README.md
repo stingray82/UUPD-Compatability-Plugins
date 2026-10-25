@@ -32,9 +32,13 @@ For **existing pages** under WordPress Settings (`options-general.php`), the ori
 - Expected activation destination: `https://test.wpcode.dev/wp-admin/options-general.php?page=esp-example-setting-page`
 - Place generated Part 3 into `esp_render_settings_page()`. Do **not** create a second menu page.
 
-The page slug is the WordPress `add_menu_page()` / `add_submenu_page()` / `add_options_page()` slug, **not** its visible title. Blank target slugs retain the earlier `vendor-software-slug` fallback, so supply the target slug explicitly for existing pages. The generator forces inline-only configurations to avoid registering a menu. Prior products without new configuration fields retain their old default parent behaviour; a previous `top_level` setting is interpreted as new top-level placement. Existing saved configurations, REST routes and release features remain supported.
+The page slug is the WordPress `add_menu_page()` / `add_submenu_page()` / `add_options_page()` slug, **not** its visible title. For existing pages the target slug is REQUIRED. A missing slug now produces a clear error marker in the generated constants, rather than silently falling back to `vendor-software-slug`. Enter it in the Bridge settings, not by editing generated code. New menus may leave the slug blank to use the `vendor-software-slug` default. The generator forces inline-only configurations to avoid registering a menu. Prior products without new configuration fields retain their old default parent behaviour; a previous `top_level` setting is interpreted as new top-level placement. Existing saved configurations, REST routes and release features remain supported.
 
 ### Unreleased change list — 1.1.0 (version unchanged)
+
+- Clarified the inline-only / existing-page selection and refreshed the preview on initial form load.
+- Explicitly flagged missing existing-page slugs in generated constants. No edits to generated PHP required after selecting the correct page in the Bridge.
+- Added an updated Example Plugin test package configured with `esp-example-setting-page`.
 
 - Fixed generated **Activate License** destinations for inline licence boxes on existing settings pages.
 - Added configurable **menu placement**: reuse existing page without registration, create top-level licence menu, or add licence submenu under an existing parent.

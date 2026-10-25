@@ -175,6 +175,7 @@ final class Stackless_UUPD_Bridge {
         $mode = $get('mode', 'both');
         $parent = $get('menu_parent', 'options-general.php');
         $placement = $get('menu_placement', $mode === 'inline' ? 'existing' : ($parent === 'top_level' ? 'top' : 'submenu'));
+        if ($mode === 'inline') { $placement = 'existing'; }
         $target_slug = $get('menu_slug', '');
         $menu_title = $get('menu_title', '');
         $page_title = $get('page_title', '');
@@ -186,11 +187,12 @@ final class Stackless_UUPD_Bridge {
         woocommerce_wp_select(['id' => self::META_PREFIX . 'type', 'label' => 'Software type', 'value' => $type, 'options' => ['plugin'=>'Plugin', 'theme'=>'Theme']]);
         woocommerce_wp_select(['id' => self::META_PREFIX . 'mode', 'label' => 'Licence UI', 'value' => $mode, 'options' => ['inline'=>'Inline only', 'menu'=>'Menu only', 'both'=>'Inline + menu']]);
         woocommerce_wp_select(['id' => self::META_PREFIX . 'menu_placement', 'label' => 'Menu placement', 'value' => $placement, 'options' => ['existing'=>'Use existing settings page (no new menu)', 'top'=>'Create new top-level menu', 'submenu'=>'Create submenu under parent']]);
-        woocommerce_wp_text_input(['id' => self::META_PREFIX . 'menu_parent', 'label' => 'Parent menu slug', 'value' => $parent, 'description' => 'For existing page: options-general.php or admin.php/custom parent slug. For new submenu: the parent slug, e.g. options-general.php or my-plugin.', 'desc_tip'=>true]);
+        woocommerce_wp_text_input(['id' => self::META_PREFIX . 'menu_parent', 'label' => 'Parent menu slug', 'value' => $parent, 'description' => 'For an existing Settings page: options-general.php; Tools: tools.php; a custom plugin menu: its parent slug. For a new submenu: the parent menu slug.', 'desc_tip'=>true]);
         woocommerce_wp_text_input(['id' => self::META_PREFIX . 'menu_slug', 'label' => 'Target / new page slug', 'value' => $target_slug, 'description' => 'Existing page: exact registered slug, e.g. esp-example-setting-page. New menu: unique slug; blank uses vendor-software-slug.', 'desc_tip'=>true]);
         woocommerce_wp_text_input(['id' => self::META_PREFIX . 'menu_title', 'label' => 'New menu title', 'value' => $menu_title, 'description' => 'For newly created menus only. Blank defaults to product name + License.', 'desc_tip'=>true]);
         woocommerce_wp_text_input(['id' => self::META_PREFIX . 'page_title', 'label' => 'New page title', 'value' => $page_title, 'description' => 'For newly created menus only. Blank defaults to product name + License.', 'desc_tip'=>true]);
-        echo '<p style="padding:0 12px">Existing page: use Inline and place Part 3 inside its settings callback. The Bridge will not register a duplicate menu. New menu: choose Menu only or Inline + menu.</p>';
+        echo '<p id="stackless-uupd-menu-help" style="padding:0 12px">Inline only = existing page, no new WordPress menu. Choose parent options-general.php (Settings), tools.php (Tools) or a custom parent menu slug, and enter the <strong>exact page slug</strong> registered by your plugin. To create a new licence page use Menu only or Inline + menu. Generated snippets do not need edits.</p>';
+        echo '<p id="stackless-uupd-slug-warning" style="display:none;padding:0 12px;color:#b32d2e;font-weight:600">Existing page slug is required. Without it, activation links will point at the wrong page.</p>';
         woocommerce_wp_text_input(['id' => self::META_PREFIX . 'updater_path', 'label' => 'Updater include path', 'value' => $updater_path, 'description' => 'Path relative to the main plugin/theme directory; e.g. inc/updater.php', 'desc_tip' => true]);
         woocommerce_wp_text_input(['id' => self::META_PREFIX . 'ui_path', 'label' => 'Licence UI include path', 'value' => $ui_path, 'description' => 'Relative path, e.g. includes/licensing/class-uupd-license-ui.php', 'desc_tip' => true]);
         $slug = get_post_meta($id, '_stackless_sl_slug', true);
@@ -211,7 +213,42 @@ final class Stackless_UUPD_Bridge {
         echo '<p style="padding:0 12px"><textarea id="stackless-uupd-inline" readonly style="width:100%;height:85px;font-family:monospace" onclick="this.select()">' . esc_textarea($parts['inline']) . '</textarea></p>';
         echo '</div>';
         echo '<p style="padding:0 12px">Install this bridge only on the Stackless store, not on customer sites.</p>';
-        echo '<script>jQuery(function($){let timer;const prefix="' . esc_js(self::META_PREFIX) . '";const ids=["vendor","type","mode","menu_placement","menu_parent","menu_slug","menu_title","page_title","updater_path","ui_path"];const panel=$("#stackless_uupd_panel");function refresh(){const data={action:"stackless_uupd_preview",nonce:"' . esc_js(wp_create_nonce('stackless_uupd_preview')) . '",product_id:' . (int)$id . '};ids.forEach(k=>data[k]=panel.find("#"+prefix+k).val());$.post(ajaxurl,data,function(r){if(r&&r.success){$("#stackless-uupd-constants").val(r.data.constants);$("#stackless-uupd-bootloader").val(r.data.bootloader);$("#stackless-uupd-inline").val(r.data.inline);$("#stackless-uupd-inline-section").toggle(data.mode!=="menu");}});}panel.on("input change",ids.map(k=>"#"+prefix+k).join(","),function(){clearTimeout(timer);timer=setTimeout(refresh,180);});});</script>';
+        echo <<<'SCRIPT'
+<script>
+jQuery(function($){
+  let timer;
+  const prefix="_stackless_uupd_";
+  const ids=["vendor","type","mode","menu_placement","menu_parent","menu_slug","menu_title","page_title","updater_path","ui_path"];
+  const panel=$("#stackless_uupd_panel");
+  const field=k=>panel.find("#"+prefix+k);
+  function sync(){
+    const inline=field("mode").val()==="inline";
+    if(inline)field("menu_placement").val("existing");
+    field("menu_placement").find('option[value="top"],option[value="submenu"]').prop("disabled",inline);
+    const existing=field("menu_placement").val()==="existing";
+    field("menu_parent").closest("p.form-field").toggle(field("menu_placement").val()!=="top");
+    field("menu_title").closest("p.form-field").toggle(!existing);
+    field("page_title").closest("p.form-field").toggle(!existing);
+    $("#stackless-uupd-slug-warning").toggle(existing&&!field("menu_slug").val().trim());
+    $("#stackless-uupd-inline-section").toggle(field("mode").val()!=="menu");
+  }
+  function refresh(){
+    sync();
+    const data={action:"stackless_uupd_preview",nonce:window.stacklessUupdPreviewNonce,product_id:window.stacklessUupdProductId};
+    ids.forEach(k=>data[k]=field(k).val());
+    $.post(ajaxurl,data,function(r){if(r&&r.success){
+      $("#stackless-uupd-constants").val(r.data.constants);
+      $("#stackless-uupd-bootloader").val(r.data.bootloader);
+      $("#stackless-uupd-inline").val(r.data.inline);
+    }});
+  }
+  panel.on("input change",ids.map(k=>"#"+prefix+k).join(","),function(){sync();clearTimeout(timer);timer=setTimeout(refresh,180);});
+  sync();
+});
+</script>
+SCRIPT;
+        echo '<script>window.stacklessUupdPreviewNonce=' . wp_json_encode(wp_create_nonce('stackless_uupd_preview')) . ';window.stacklessUupdProductId=' . (int)$id . ';</script>';
+
         echo '</div></div>';
     }
 
@@ -232,6 +269,7 @@ final class Stackless_UUPD_Bridge {
             if ($field === 'menu_placement' && !in_array($value, ['existing','top','submenu'], true)) { $value = 'submenu'; }
             if ($field === 'menu_parent') { $value = self::safe_menu_parent($value); }
             if ($field === 'menu_slug') { $value = sanitize_key($value); }
+            if ($field === 'menu_placement' && sanitize_key(wp_unslash($_POST[self::META_PREFIX . 'mode'] ?? '')) === 'inline') { $value = 'existing'; }
             if (in_array($field, ['updater_path','ui_path'], true)) { $value = self::safe_path($value, $field === 'updater_path' ? 'inc/updater.php' : 'inc/class-uupd-license-ui.php'); }
             $product->update_meta_data($key, $value);
         }
@@ -282,7 +320,8 @@ final class Stackless_UUPD_Bridge {
             $const .= 'define( ' . $q($base . '_' . $key) . ', ' . $q($value) . " );\n";
         }
         $const .= "define( '" . $base . "_MAIN_FILE', __FILE__ ); // Plugin main file, or theme functions.php\n";
-        $const .= 'define( ' . $q($base . '_MENU_SLUG') . ', ' . ($target_slug !== '' ? $q($target_slug) : $base . "_VENDOR . '-' . " . $base . '_SLUG') . " );\n";
+        if (!$creates_menu && $target_slug === '') { $const .= '// ERROR: Set Target / new page slug in the Bridge before using this loader.\n'; }
+        $const .= 'define( ' . $q($base . '_MENU_SLUG') . ', ' . ($target_slug !== '' ? $q($target_slug) : ($creates_menu ? $base . "_VENDOR . '-' . " . $base . '_SLUG' : $q('REPLACE-WITH-EXISTING-PAGE-SLUG'))) . " );\n";
         $C = static function($key) use ($base) { return $base . '_' . $key; };
         $root = $type === 'theme' ? 'get_stylesheet_directory()' : '__DIR__';
         $hook = $type === 'theme' ? 'after_setup_theme' : 'plugins_loaded';
@@ -311,7 +350,7 @@ final class Stackless_UUPD_Bridge {
             $boot .= "        if ( ! \$show || ( \$license['status'] ?? '' ) === 'active' ) { return \$show; }\n";
             $boot .= "        add_action( 'admin_notices', static function () {\n";
             $boot .= "            if ( ! current_user_can( 'manage_options' ) ) { return; }\n";
-            $boot .= "            \$url = add_query_arg( 'page', " . $C('MENU_SLUG') . ", admin_url( 'admin.php' ) );\n";
+            $boot .= "            \$url = add_query_arg( 'page', " . $C('MENU_SLUG') . ", admin_url( " . $q(in_array($menu_parent, ['tools.php','themes.php','plugins.php','users.php','index.php','upload.php','edit.php'], true) ? $menu_parent : 'admin.php') . " ) );\n";
             $boot .= "            echo '<div class=\"notice notice-warning\"><p>' . esc_html( sprintf( 'Please activate your %s license to enable updates and support.', " . $C('FRIENDLY_NAME') . " ) ) . ' <a class=\"button button-primary\" href=\"' . esc_url( \$url ) . '\">Activate License</a></p></div>';\n";
             $boot .= "        } );\n";
             $boot .= "        return false;\n    }, 10, 2 );\n\n";
