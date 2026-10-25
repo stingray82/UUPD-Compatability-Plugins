@@ -42,6 +42,11 @@ final class Stackless_UUPD_Release_API {
         if (!in_array($download_mode, ['replace', 'append'], true)) {
             return new WP_Error('release_download_mode', 'download_mode must be replace or append.', ['status'=>400]);
         }
+        if (class_exists('Stackless_UUPD_Variation_Releases') && Stackless_UUPD_Variation_Releases::enabled($product)) {
+            $scope_check=(string)$request->get_param('release_scope');
+            if ($scope_check && !in_array($scope_check,['product','all_variations'],true)) return new WP_Error('release_scope','release_scope must be product or all_variations.', ['status'=>400]);
+            if (Stackless_UUPD_Variation_Releases::scope($product,$scope_check)==='all_variations' && !$product->is_type('variable')) return new WP_Error('release_not_variable','All variations requires a variable product.', ['status'=>400]);
+        }
         $files = $request->get_file_params();
         $upload = $files['package'] ?? null;
         $url = trim((string)$request->get_param('download_url'));
@@ -139,7 +144,12 @@ final class Stackless_UUPD_Release_API {
             $download->set_id($selected);
             $download->set_name(sanitize_key((string)$request['slug']) . ' ' . $version);
             $download->set_file($artifact ?: esc_url_raw($url));
-            $downloads[$selected] = $download;
+            if (class_exists('Stackless_UUPD_Variation_Releases') && Stackless_UUPD_Variation_Releases::enabled($product)) {
+                // Opted-in release manager always puts the newly published file first.
+                $downloads = [$selected => $download] + $downloads;
+            } else {
+                $downloads[$selected] = $download;
+            }
             $product->set_downloadable(true);
             $product->set_downloads($downloads);
             $product->update_meta_data('_stackless_sl_package_source', 'download');
@@ -150,7 +160,25 @@ final class Stackless_UUPD_Release_API {
         if ($request->get_param('publish')) { $product->set_status('publish'); }
         $product->save();
         clean_post_cache($product->get_id());
-        $response = new WP_REST_Response(['success'=>true, 'id'=>$product->get_id(),'slug'=>sanitize_key((string)$request['slug']), 'status'=>$product->get_status(), 'version'=>$version, 'download_mode'=>$download_mode, 'download_count'=>count($product->get_downloads()), 'package'=>!!($artifact || $url || \Stackless\Modules\SoftwareLicensing\ProductConfig::package($product)), 'last_updated'=>current_time('mysql')], 200);
+        $distribution = null;
+        // Backward compatible: deploy.sh sends no new fields. The product's opt-in
+        // settings choose whether we also distribute to its variations.
+        if (class_exists('Stackless_UUPD_Variation_Releases') && Stackless_UUPD_Variation_Releases::enabled($product) && ($artifact || $url)) {
+            $requested_scope = (string)$request->get_param('release_scope');
+            if ($requested_scope && !in_array($requested_scope, ['product','all_variations'], true)) {
+                return new WP_Error('release_scope', 'release_scope must be product or all_variations.', ['status'=>400]);
+            }
+            $scope = Stackless_UUPD_Variation_Releases::scope($product, $requested_scope);
+            $grant = in_array(strtolower((string)$request->get_param('grant_existing')), ['1','yes','true','on'], true);
+            $distribution = Stackless_UUPD_Variation_Releases::apply(
+                $product, $artifact ?: esc_url_raw($url), sanitize_key((string)$request['slug']).' '.$version,
+                $download_mode, $scope, $grant, $selected
+            );
+            if (is_wp_error($distribution)) {
+                return new WP_Error('release_variations_failed', $distribution->get_error_message(), ['status'=>500, 'parent_updated'=>true]);
+            }
+        }
+        $response = new WP_REST_Response(['success'=>true, 'id'=>$product->get_id(),'slug'=>sanitize_key((string)$request['slug']), 'status'=>$product->get_status(), 'version'=>$version, 'download_mode'=>$download_mode, 'download_count'=>count($product->get_downloads()), 'package'=>!!($artifact || $url || \Stackless\Modules\SoftwareLicensing\ProductConfig::package($product)), 'last_updated'=>current_time('mysql'), 'distribution'=>$distribution], ($distribution && !empty($distribution['failed'])) ? 207 : 200);
         $response->header('Cache-Control','no-store');
         return $response;
     }
