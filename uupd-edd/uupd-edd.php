@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UUPD > EPD
  * Description: Adds UUPD-compatible license and metadata endpoints on top of Easy Digital Downloads Software Licensing
- * Version: 1.0
+ * Version: 1.1
  * Author:  Reallyusefulplugins.com
  * Author URI: https://reallyusefulplugins.com
  * Requires PHP: 7.4
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 
 	final class EDD_UUPD_Compatibility_Layer {
-		const VERSION = '1.0';
+		const VERSION = '1.1';
 		const SLUG_META_KEY = '_uupd_plugin_slug';
 		const OPTION_AUTHOR = 'edd_uupd_global_author';
 		const OPTION_AUTHOR_URL = 'edd_uupd_global_author_url';
@@ -34,6 +34,7 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 			add_action( 'edd_meta_box_fields', [ __CLASS__, 'render_download_settings_section' ] );
 			add_action( 'save_post_download', [ __CLASS__, 'save_download_meta_box' ], 999 );
 			add_action( 'shutdown', [ __CLASS__, 'apply_pending_post_save' ], 999 );
+			add_action( 'wp_ajax_edd_uupd_loader_preview', [ __CLASS__, 'ajax_loader_preview' ] );
 
 			// Keep package delivery inside native EDD Software Licensing.
 			add_filter( 'edd_sl_package_download_computed_hash', [ __CLASS__, 'filter_package_download_computed_hash' ], 10, 6 );
@@ -888,7 +889,8 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 
 			$error = isset( $body['error'] ) ? (string) $body['error'] : '';
 			if ( '' !== $error ) {
-				$map = [
+
+			$map = [
 					'missing'               => 'License does not exist.',
 					'missing_url'           => 'Site URL is required.',
 					'license_not_activable' => 'This license cannot be activated remotely.',
@@ -944,6 +946,29 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 				return;
 			}
 
+			$snippets = self::generate_loader_snippets( $post_id );
+			$cfg = self::loader_settings( $post_id );
+			$bootloader = $snippets['bootloader'];
+			$inline = $snippets['inline'];
+
+			if ( 'uupd_inline_copy' === $column && 'menu' === $cfg['mode'] ) { echo '<span class="description">Menu only</span>'; return; }
+
+			if ( 'uupd_bootloader_copy' === $column ) {
+				printf(
+					'<button type="button" class="button button-small edd-uupd-copy-btn" data-uupd-copy="%s">Copy bootloader</button>',
+					esc_attr( $bootloader )
+				);
+			} else {
+				printf(
+					'<button type="button" class="button button-small edd-uupd-copy-btn" data-uupd-copy="%s">Copy inline</button>',
+					esc_attr( $inline )
+				);
+			}
+		}
+
+		protected static function generate_loader_snippets( $post_id, $overrides = [] ) {
+			$post = get_post( $post_id );
+
 			$friendly = html_entity_decode( get_the_title( $post_id ), ENT_QUOTES, 'UTF-8' );
 			$slug     = self::get_download_slug( $post_id, $post );
 			$version  = self::get_download_version( $post_id );
@@ -953,6 +978,11 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 				$vendor = 'yourvendor';
 			}
 
+			$cfg = array_merge( self::loader_settings( $post_id ), $overrides );
+			if ( 'inline' === $cfg['mode'] ) { $cfg['placement'] = 'existing'; }
+			$creates_menu = 'inline' !== $cfg['mode'] && 'existing' !== $cfg['placement'];
+			$menu_slug = $cfg['menu_slug'] ?: ( $creates_menu ? $vendor . '-' . $slug : 'REPLACE-WITH-EXISTING-PAGE-SLUG' );
+			$menu_parent = $creates_menu ? ( 'top' === $cfg['placement'] ? 'top_level' : $cfg['menu_parent'] ) : false;
 			$prefix = self::build_bootloader_constant_prefix( $vendor, $slug, $post_id );
 			$server = apply_filters( 'edd_uupd_compat/bootloader_server_base', home_url( '/' ), $post_id, $slug, $vendor );
 
@@ -977,23 +1007,23 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 			$lines[] = "define( '{$c_name}', '" . $esc( $friendly ) . "' );";
 			$lines[] = "define( '{$c_slug}', '" . $esc( $slug ) . "' );";
 			$lines[] = "define( '{$c_server}', '" . $esc( trailingslashit( $server ) ) . "' );";
-			$lines[] = "define( '{$c_menu}', {$c_vendor} . '-' . {$c_slug} );";
+			$lines[] = "define( '{$c_menu}', '" . $esc( $menu_slug ) . "' );";
 			$lines[] = '';
 			$lines[] = "add_action( 'plugins_loaded', function() {";
-			$lines[] = "    require_once __DIR__ . '/inc/updater.php';";
-			$lines[] = "    require_once __DIR__ . '/inc/class-uupd-license-ui.php';";
+			$lines[] = "    require_once __DIR__ . '/" . $esc( $cfg['updater_path'] ) . "';";
+			$lines[] = "    require_once __DIR__ . '/" . $esc( $cfg['ui_path'] ) . "';";
 			$lines[] = '';
 			$lines[] = "    \\UUPD\\UI\\License\\V1\\UUPD_License_UI::register([";
 			$lines[] = "        'vendor'         => {$c_vendor},";
 			$lines[] = "        'slug'           => {$c_slug},";
 			$lines[] = "        'item_id'        => {$c_item_no},";
 			$lines[] = "        'license_server' => {$c_server},";
-			$lines[] = "        'metadata_base'  => {$c_server},";
+			$lines[] = "        'metadata_base'  => {$c_server} . 'wp-json/uupd/v1/metadata',";
 			$lines[] = "        'plugin_name'    => {$c_name},";
-			$lines[] = "        'menu_parent'    => 'top_level',";
+			$lines[] = "        'menu_parent'    => " . ( $menu_parent === false ? 'false' : "'" . $esc( $menu_parent ) . "'" ) . ",";
 			$lines[] = "        'menu_slug'      => {$c_menu},";
-			$lines[] = "        'page_title'     => {$c_name} . ' License',";
-			$lines[] = "        'menu_title'     => {$c_name} . ' License',";
+			$lines[] = "        'page_title'     => " . ( $cfg['page_title'] !== '' ? "'" . $esc( $cfg['page_title'] ) . "'" : "{$c_name} . ' License'" ) . ",";
+			$lines[] = "        'menu_title'     => " . ( $cfg['menu_title'] !== '' ? "'" . $esc( $cfg['menu_title'] ) . "'" : "{$c_name} . ' License'" ) . ",";
 			$lines[] = "        'capability'     => 'manage_options',";
 			$lines[] = "    ]);";
 			$lines[] = '';
@@ -1003,24 +1033,59 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 			$lines[] = "        'slug'        => {$c_slug},";
 			$lines[] = "        'name'        => {$c_name},";
 			$lines[] = "        'version'     => {$c_version},";
-			$lines[] = "        'server'      => '',";
+			$lines[] = "        'mode'        => 'json',";
+			$lines[] = "        'server'      => {$c_server} . 'wp-json/uupd/v1/metadata',";
 			$lines[] = "    ]);";
 			$lines[] = "}, 1 );";
 
-			$bootloader = implode( "\n", $lines );
-			$inline     = "<?php \$inst = \\UUPD\\UI\\License\\V1\\UUPD_License_UI::get_instance( {$c_vendor}, {$c_slug} ); if ( \$inst ) { \$inst->render_page(); } ?>";
+			return [ 'bootloader' => implode( "\n", $lines ), 'inline' => "\\UUPD\\UI\\License\\V1\\UUPD_License_UI::render_box_for( {$c_slug}, {$c_vendor} );" ];
 
-			if ( 'uupd_bootloader_copy' === $column ) {
-				printf(
-					'<button type="button" class="button button-small edd-uupd-copy-btn" data-uupd-copy="%s">Copy bootloader</button>',
-					esc_attr( $bootloader )
-				);
-			} else {
-				printf(
-					'<button type="button" class="button button-small edd-uupd-copy-btn" data-uupd-copy="%s">Copy inline</button>',
-					esc_attr( $inline )
-				);
+		}
+
+		protected static function sanitize_loader_value( $key, $raw ) {
+			$value = sanitize_text_field( (string) $raw );
+			if ( 'mode' === $key ) { return in_array( $value, [ 'inline', 'menu', 'both' ], true ) ? $value : 'both'; }
+			if ( 'placement' === $key ) { return in_array( $value, [ 'existing', 'top', 'submenu' ], true ) ? $value : 'top'; }
+			if ( 'menu_slug' === $key ) { return sanitize_key( $value ); }
+			if ( in_array( $key, [ 'updater_path', 'ui_path' ], true ) ) {
+				$value = trim( str_replace( '\\', '/', $value ), '/' );
+				return strpos( $value, '..' ) === false && preg_match( '~^[a-zA-Z0-9_./-]+\.php$~', $value ) ? $value : null;
 			}
+			return $value;
+		}
+
+		public static function ajax_loader_preview() {
+			$post_id = isset( $_POST['post_id'] ) ? absint( $_POST['post_id'] ) : 0;
+			check_ajax_referer( 'edd_uupd_loader_preview_' . $post_id, 'nonce' );
+			if ( ! $post_id || 'download' !== get_post_type( $post_id ) || ! current_user_can( 'edit_post', $post_id ) ) {
+				wp_send_json_error( 'Permission denied.', 403 );
+			}
+			$overrides = [];
+			foreach ( [ 'mode', 'placement', 'menu_parent', 'menu_slug', 'menu_title', 'page_title', 'updater_path', 'ui_path' ] as $key ) {
+				$field = 'edd_uupd_loader_' . $key;
+				if ( isset( $_POST[ $field ] ) && is_string( $_POST[ $field ] ) ) {
+					$value = self::sanitize_loader_value( $key, wp_unslash( $_POST[ $field ] ) );
+					if ( null === $value ) { wp_send_json_error( 'Invalid PHP include path for ' . $key . '.', 400 ); }
+					$overrides[ $key ] = $value;
+				}
+			}
+			$cfg = array_merge( self::loader_settings( $post_id ), $overrides );
+			if ( 'inline' === $cfg['mode'] ) { $overrides['placement'] = 'existing'; }
+			$snippets = self::generate_loader_snippets( $post_id, $overrides );
+			wp_send_json_success( [ 'bootloader' => $snippets['bootloader'], 'inline' => 'menu' === $cfg['mode'] ? '' : $snippets['inline'] ] );
+		}
+
+		protected static function loader_settings( $post_id ) {
+			$defaults = [
+				'mode' => 'both', 'placement' => 'top', 'menu_parent' => 'options-general.php',
+				'menu_slug' => '', 'menu_title' => '', 'page_title' => '',
+				'updater_path' => 'inc/updater.php', 'ui_path' => 'inc/class-uupd-license-ui.php',
+			];
+			foreach ( $defaults as $key => $default ) {
+				$value = get_post_meta( $post_id, '_edd_uupd_loader_' . $key, true );
+				$defaults[ $key ] = metadata_exists( 'post', $post_id, '_edd_uupd_loader_' . $key ) && is_string( $value ) ? $value : $default;
+			}
+			return $defaults;
 		}
 
 		protected static function get_download_slug( $post_id, $post ) {
@@ -1223,7 +1288,53 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
     });
   }
 
-  $(document).on('click', '.edd-uupd-copy-btn', function(e){
+  $(document).on('click', '[data-uupd-tab]', function(e){
+    e.preventDefault();
+    var tab = $(this).attr('data-uupd-tab');
+    var wrap = $(this).closest('.edd-admin-box-inside');
+    wrap.find('[data-uupd-tab]').removeClass('button-primary');
+    $(this).addClass('button-primary');
+    wrap.find('[data-uupd-panel]').hide().filter('[data-uupd-panel="'+tab+'"]').show();
+  });
+  var previewTimer, previewRequest;
+  function syncLoader(){
+    var mode = $('#edd_uupd_loader_mode').val(), placement = $('#edd_uupd_loader_placement').val();
+    var isInline = mode === 'inline', existing = placement === 'existing' || isInline;
+    $('#edd_uupd_loader_placement').closest('p').toggle(!isInline);
+    $('[data-uupd-field="menu_parent"]').toggle(!existing && placement === 'submenu');
+    $('[data-uupd-field="menu_slug"]').show();
+    $('[data-uupd-field="menu_title"],[data-uupd-field="page_title"]').toggle(!existing);
+    $('#edd-uupd-loader-warning').toggle(existing);
+    $('#edd-uupd-inline-preview').toggle(mode !== 'menu');
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(refreshPreview, 250);
+  }
+  function refreshPreview(){
+    var box = $('#edd-uupd-loader-preview');
+    if(!box.length || !window.ajaxurl) return;
+    var data = {action:'edd_uupd_loader_preview', post_id:box.data('post-id'), nonce:box.data('nonce')};
+    $('[name^="edd_uupd_loader_"]').each(function(){data[this.name]=$(this).val();});
+    if(previewRequest) previewRequest.abort();
+    $('#edd-uupd-preview-status').text('Generating preview…');
+    previewRequest = $.post(ajaxurl,data).done(function(response){
+      if(!response || !response.success){$('#edd-uupd-preview-status').text((response && response.data) || 'Preview unavailable.');return;}
+      $('#edd-uupd-bootloader-output').val(response.data.bootloader);
+      $('#edd-uupd-inline-output').val(response.data.inline);
+      var mode = $('#edd_uupd_loader_mode').val(), placement = $('#edd_uupd_loader_placement').val();
+      if((mode === 'inline' || placement === 'existing') && !$('#edd_uupd_loader_menu_slug').val().trim()){
+        $('#edd-uupd-preview-status').text('Set an existing settings page slug before using this snippet.');
+      }else{$('#edd-uupd-preview-status').text('Preview updated (not yet saved).');}
+    }).fail(function(xhr,status){if(status !== 'abort') $('#edd-uupd-preview-status').text('Could not generate preview. Check your PHP include paths.');});
+  }
+  $(document).on('change input', '[name^="edd_uupd_loader_"]', syncLoader);
+  $(document).on('click', '.edd-uupd-preview-copy', function(e){
+    e.preventDefault();var btn=this, payload=$('#'+$(btn).data('target')).val();
+    if(!payload)return;
+    copyText(payload).then(function(){var old=btn.textContent;btn.textContent='Copied!';setTimeout(function(){btn.textContent=old;},900);});
+  });
+  $(syncLoader);
+
+  $(document).on('click', '.edd-uupd-copy-btn' , function(e){
     e.preventDefault();
     var btn = this;
     var payload = btn.getAttribute('data-uupd-copy') || '';
@@ -1314,6 +1425,11 @@ JS;
 			$global_author_url = get_option( self::OPTION_AUTHOR_URL, '' );
 			$global_vendor = get_option( self::OPTION_VENDOR, '' );
 			?>
+			<div class="edd-uupd-tabs" style="margin:10px 0 14px;display:flex;gap:6px;flex-wrap:wrap;">
+				<button type="button" class="button button-primary" data-uupd-tab="updates">Updates &amp; metadata</button>
+				<button type="button" class="button" data-uupd-tab="loader">Licence UI &amp; Loader</button>
+			</div>
+			<div data-uupd-panel="updates">
 			<p>
 				<label for="edd_uupd_slug"><strong>Plugin slug</strong></label>
 				<input type="text" class="widefat" id="edd_uupd_slug" name="edd_uupd_slug" value="<?php echo esc_attr( $slug ); ?>" placeholder="my-plugin-slug" />
@@ -1427,6 +1543,47 @@ JS;
 					'description' => 'Used for banners[high] in the metadata response.',
 				]
 			);
+			?>
+			</div>
+			<div data-uupd-panel="loader" style="display:none;">
+				<p>Configure the licence interface generated for the customer's plugin. These choices affect the bootloader copied from the Downloads list after saving this Download.</p>
+				<?php
+				$cfg = self::loader_settings( $post->ID );
+				$choices = [
+					'mode' => [ 'label' => 'Licence UI mode', 'options' => [ 'inline'=>'Inline only (existing settings page)', 'menu'=>'Menu only', 'both'=>'Inline and menu' ] ],
+					'placement' => [ 'label' => 'Menu placement', 'options' => [ 'existing'=>'Use existing settings page (no new menu)', 'top'=>'New top-level menu', 'submenu'=>'New submenu' ] ],
+				];
+				foreach ( $choices as $key => $choice ) {
+					echo '<p><label for="edd_uupd_loader_' . esc_attr( $key ) . '"><strong>' . esc_html( $choice['label'] ) . '</strong></label><select class="widefat" id="edd_uupd_loader_' . esc_attr( $key ) . '" name="edd_uupd_loader_' . esc_attr( $key ) . '">';
+					foreach ( $choice['options'] as $value => $label ) { echo '<option value="' . esc_attr( $value ) . '" ' . selected( $cfg[$key], $value, false ) . '>' . esc_html( $label ) . '</option>'; }
+					echo '</select></p>';
+				}
+				$text_fields = [
+					'menu_parent' => 'Parent menu slug (e.g. options-general.php, tools.php or custom parent)',
+					'menu_slug' => 'Existing / new page slug (required when reusing a page)',
+					'menu_title' => 'New menu title (optional)',
+					'page_title' => 'New page title (optional)',
+					'updater_path' => 'Updater include path (relative to plugin root)',
+					'ui_path' => 'Licence UI include path (relative to plugin root)',
+				];
+				foreach ( $text_fields as $key => $label ) { ?>
+					<p data-uupd-field="<?php echo esc_attr( $key ); ?>"><label for="edd_uupd_loader_<?php echo esc_attr( $key ); ?>"><strong><?php echo esc_html( $label ); ?></strong></label><input class="widefat" type="text" id="edd_uupd_loader_<?php echo esc_attr( $key ); ?>" name="edd_uupd_loader_<?php echo esc_attr( $key ); ?>" value="<?php echo esc_attr( $cfg[$key] ); ?>" /></p>
+				<?php } ?>
+				<p class="description" id="edd-uupd-loader-warning">Inline/existing-page mode does not create a menu. Enter the exact registered settings page slug and insert the inline snippet into that page's rendering callback. Menu-only mode does not need the inline snippet.</p>
+				<div id="edd-uupd-loader-preview" data-post-id="<?php echo esc_attr( $post->ID ); ?>" data-nonce="<?php echo esc_attr( wp_create_nonce( 'edd_uupd_loader_preview_' . $post->ID ) ); ?>" style="margin-top:18px;">
+					<h3>Live generated code preview</h3>
+					<p class="description">Updates as settings change. Preview changes are not saved until you update this Download. Product name, version, slug and global vendor reflect saved values until then.</p>
+					<p id="edd-uupd-preview-status" role="status" aria-live="polite"></p>
+					<label for="edd-uupd-bootloader-output"><strong>Bootloader</strong></label>
+					<textarea id="edd-uupd-bootloader-output" class="widefat" rows="13" readonly spellcheck="false" style="font-family:monospace;"></textarea>
+					<p><button type="button" class="button edd-uupd-preview-copy" data-target="edd-uupd-bootloader-output">Copy bootloader</button></p>
+					<div id="edd-uupd-inline-preview"><label for="edd-uupd-inline-output"><strong>Inline display snippet</strong></label>
+					<textarea id="edd-uupd-inline-output" class="widefat" rows="2" readonly spellcheck="false" style="font-family:monospace;"></textarea>
+					<p><button type="button" class="button edd-uupd-preview-copy" data-target="edd-uupd-inline-output">Copy inline snippet</button></p></div>
+				</div>
+				<p><strong>To use:</strong> Save/Update the Download, then use the Bootloader and Inline display copy buttons on the Downloads list. Copy the bootloader into your main plugin PHP file (without adding another PHP opening tag), and install both UUPD source files at your chosen paths.</p>
+			</div>
+			<?php
 		}
 
 		protected static function sanitize_package_mode( $value ) {
@@ -1516,6 +1673,14 @@ JS;
 			*/
 			if ( ! $has_uupd_nonce ) {
 				return;
+			}
+
+			$loader_options = [ 'mode', 'placement', 'menu_parent', 'menu_slug', 'menu_title', 'page_title', 'updater_path', 'ui_path' ];
+			foreach ( $loader_options as $key ) {
+				$field = 'edd_uupd_loader_' . $key;
+				if ( ! isset( $_POST[ $field ] ) || ! is_string( $_POST[ $field ] ) ) { continue; }
+				$value = self::sanitize_loader_value( $key, wp_unslash( $_POST[ $field ] ) );
+				if ( null !== $value ) { update_post_meta( $post_id, '_edd_uupd_loader_' . $key, $value ); }
 			}
 
 			$map = [
