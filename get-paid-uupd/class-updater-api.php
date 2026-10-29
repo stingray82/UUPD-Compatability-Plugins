@@ -1,4 +1,56 @@
 <?php
+if ( ! function_exists( 'uupd_compat_metadata_key' ) ) {
+    function uupd_compat_metadata_key( $request = null ) {
+        $authorization = $request instanceof WP_REST_Request ? $request->get_header( 'authorization' ) : '';
+        if ( '' === $authorization && isset( $_SERVER['HTTP_AUTHORIZATION'] ) ) { $authorization = wp_unslash( $_SERVER['HTTP_AUTHORIZATION'] ); }
+        if ( preg_match( '/^Bearer\s+(.+)$/i', trim( (string) $authorization ), $matches ) ) { return trim( $matches[1] ); }
+        $query = $request instanceof WP_REST_Request ? $request->get_query_params() : $_GET;
+        if ( ( isset( $query['key'] ) || isset( $query['license_key'] ) ) && ! uupd_allow_query_license_key() ) { return ''; }
+        if ( $request instanceof WP_REST_Request ) { return (string) ( $request->get_param( 'key' ) ?: $request->get_param( 'license_key' ) ); }
+        return isset( $_GET['key'] ) ? (string) wp_unslash( $_GET['key'] ) : ( isset( $_GET['license_key'] ) ? (string) wp_unslash( $_GET['license_key'] ) : '' );
+    }
+}
+
+if ( ! function_exists( 'uupd_allow_query_license_key' ) ) {
+    function uupd_allow_query_license_key() {
+        if ( defined( 'UUPD_ALLOW_QUERY_LICENSE_KEY' ) ) {
+            return (bool) UUPD_ALLOW_QUERY_LICENSE_KEY;
+        }
+        return (bool) apply_filters( 'uupd_allow_query_license_key', '1' === (string) get_option( 'uupd_allow_query_license_key', '1' ) );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_option() {
+        register_setting( 'uupd_compat_transport', 'uupd_allow_query_license_key', [
+            'type' => 'string', 'default' => '1', 'sanitize_callback' => static function ( $value ) { return '1' === (string) $value ? '1' : '0'; },
+        ] );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_settings() {
+        add_options_page( 'UUPD Key Transport', 'UUPD Key Transport', 'manage_options', 'uupd-key-transport', 'uupd_compat_render_transport_settings' );
+    }
+}
+if ( ! function_exists( 'uupd_compat_render_transport_settings' ) ) {
+    function uupd_compat_render_transport_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        ?>
+        <div class="wrap"><h1><?php esc_html_e( 'UUPD Key Transport' ); ?></h1>
+        <p><?php esc_html_e( 'Legacy URL query keys are enabled by default for backwards compatibility. Disable them after clients have moved to Authorization: Bearer.' ); ?></p>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'uupd_compat_transport' ); ?>
+            <input type="hidden" name="uupd_allow_query_license_key" value="0">
+            <label><input type="checkbox" name="uupd_allow_query_license_key" value="1" <?php checked( get_option( 'uupd_allow_query_license_key', '1' ), '1' ); ?>> <?php esc_html_e( 'Accept licence keys from the legacy key query parameter' ); ?></label>
+            <?php submit_button(); ?>
+        </form></div>
+        <?php
+    }
+}
+if ( false === has_action( 'admin_init', 'uupd_compat_register_transport_option' ) ) { add_action( 'admin_init', 'uupd_compat_register_transport_option' ); }
+if ( false === has_action( 'admin_menu', 'uupd_compat_register_transport_settings' ) ) { add_action( 'admin_menu', 'uupd_compat_register_transport_settings' ); }
+
+
+
 /**
  * GetPaid ↔ UUPD Compatibility + Custom Update Endpoint
  *
@@ -98,7 +150,7 @@ function getpaid_uupd_maybe_handle_legacy_metadata() {
 	}
 
 	$slug   = isset( $_GET['slug'] )   ? sanitize_key( wp_unslash( $_GET['slug'] ) ) : '';
-	$key    = isset( $_GET['key'] )    ? sanitize_text_field( wp_unslash( $_GET['key'] ) ) : '';
+	$key    = uupd_compat_metadata_key();
 	$domain = isset( $_GET['domain'] ) ? sanitize_text_field( wp_unslash( $_GET['domain'] ) ) : '';
 
 	if ( $slug === '' || trim( $key ) === '' || $domain === '' ) {
@@ -375,7 +427,7 @@ function getpaid_uupd_compat_metadata_handler( WP_REST_Request $request ) {
 	}
 
 	$slug   = sanitize_key( (string) $request->get_param( 'slug' ) );
-	$key    = (string) $request->get_param( 'key' );
+	$key    = uupd_compat_metadata_key( $request );
 	$domain = (string) $request->get_param( 'domain' );
 
 	if ( $slug === '' || trim( $key ) === '' || $domain === '' ) {

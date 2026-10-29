@@ -3,7 +3,7 @@
  * Plugin Name:       GetPaid > UUPD Updates
  * Plugin URI:        https://reallyusefulplugins.com
  * Description:       Handles updates for plugin meta functionality for the Get Paid UUPD plugin.
- * Version:           1.0
+ * Version:           1.1
  * Author:            Reallyusefulplugins.com
  * Author URI:        https://reallyusefulplugins.com
  * Text Domain:       get-paid-uupd

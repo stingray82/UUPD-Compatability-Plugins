@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UUPD > FluentCart
  * Description: Adds UUPD-compatible license and metadata endpoints on top of native FluentCart licensing
- * Version: 1.0
+ * Version: 1.1
  * Author:  Reallyusefulplugins.com
  * Author URI: https://reallyusefulplugins.com
  * Requires PHP: 7.4
@@ -12,6 +12,59 @@
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
+require_once __DIR__ . '/uupd-generator-menu.php';
+
+
+if ( ! function_exists( 'uupd_compat_metadata_key' ) ) {
+    function uupd_compat_metadata_key( $request = null ) {
+        $authorization = $request instanceof WP_REST_Request ? $request->get_header( 'authorization' ) : '';
+        if ( '' === $authorization && isset( $_SERVER['HTTP_AUTHORIZATION'] ) ) { $authorization = wp_unslash( $_SERVER['HTTP_AUTHORIZATION'] ); }
+        if ( preg_match( '/^Bearer\s+(.+)$/i', trim( (string) $authorization ), $matches ) ) { return trim( $matches[1] ); }
+        $query = $request instanceof WP_REST_Request ? $request->get_query_params() : $_GET;
+        if ( ( isset( $query['key'] ) || isset( $query['license_key'] ) ) && ! uupd_allow_query_license_key() ) { return ''; }
+        if ( $request instanceof WP_REST_Request ) { return (string) ( $request->get_param( 'key' ) ?: $request->get_param( 'license_key' ) ); }
+        return isset( $_GET['key'] ) ? (string) wp_unslash( $_GET['key'] ) : ( isset( $_GET['license_key'] ) ? (string) wp_unslash( $_GET['license_key'] ) : '' );
+    }
+}
+
+if ( ! function_exists( 'uupd_allow_query_license_key' ) ) {
+    function uupd_allow_query_license_key() {
+        if ( defined( 'UUPD_ALLOW_QUERY_LICENSE_KEY' ) ) {
+            return (bool) UUPD_ALLOW_QUERY_LICENSE_KEY;
+        }
+        return (bool) apply_filters( 'uupd_allow_query_license_key', '1' === (string) get_option( 'uupd_allow_query_license_key', '1' ) );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_option() {
+        register_setting( 'uupd_compat_transport', 'uupd_allow_query_license_key', [
+            'type' => 'string', 'default' => '1', 'sanitize_callback' => static function ( $value ) { return '1' === (string) $value ? '1' : '0'; },
+        ] );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_settings() {
+        add_options_page( 'UUPD Key Transport', 'UUPD Key Transport', 'manage_options', 'uupd-key-transport', 'uupd_compat_render_transport_settings' );
+    }
+}
+if ( ! function_exists( 'uupd_compat_render_transport_settings' ) ) {
+    function uupd_compat_render_transport_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        ?>
+        <div class="wrap"><h1><?php esc_html_e( 'UUPD Key Transport' ); ?></h1>
+        <p><?php esc_html_e( 'Legacy URL query keys are enabled by default for backwards compatibility. Disable them after clients have moved to Authorization: Bearer.' ); ?></p>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'uupd_compat_transport' ); ?>
+            <input type="hidden" name="uupd_allow_query_license_key" value="0">
+            <label><input type="checkbox" name="uupd_allow_query_license_key" value="1" <?php checked( get_option( 'uupd_allow_query_license_key', '1' ), '1' ); ?>> <?php esc_html_e( 'Accept licence keys from the legacy key query parameter' ); ?></label>
+            <?php submit_button(); ?>
+        </form></div>
+        <?php
+    }
+}
+if ( false === has_action( 'admin_init', 'uupd_compat_register_transport_option' ) ) { add_action( 'admin_init', 'uupd_compat_register_transport_option' ); }
+if ( false === has_action( 'admin_menu', 'uupd_compat_register_transport_settings' ) ) { add_action( 'admin_menu', 'uupd_compat_register_transport_settings' ); }
+
 
 if ( ! class_exists( 'UUPD_FluentCart_Compatibility_Layer' ) ) {
 
@@ -66,7 +119,7 @@ if ( ! class_exists( 'UUPD_FluentCart_Compatibility_Layer' ) ) {
             }
 
             $slug    = isset( $_GET['slug'] ) ? sanitize_key( wp_unslash( $_GET['slug'] ) ) : '';
-            $key     = isset( $_GET['key'] ) ? self::sanitize_license_key( wp_unslash( $_GET['key'] ) ) : '';
+            $key     = uupd_compat_metadata_key();
             $domain  = isset( $_GET['domain'] ) ? sanitize_text_field( wp_unslash( $_GET['domain'] ) ) : '';
             $item_id = isset( $_GET['item_id'] ) ? absint( $_GET['item_id'] ) : 0;
 
@@ -185,7 +238,7 @@ if ( ! class_exists( 'UUPD_FluentCart_Compatibility_Layer' ) ) {
             }
 
             $slug    = sanitize_key( (string) $request->get_param( 'slug' ) );
-            $key     = self::sanitize_license_key( (string) $request->get_param( 'key' ) );
+            $key     = self::sanitize_license_key( uupd_compat_metadata_key( $request ) );
             $domain  = sanitize_text_field( (string) $request->get_param( 'domain' ) );
             $item_id = absint( (string) $request->get_param( 'item_id' ) );
 
@@ -786,8 +839,10 @@ if ( ! class_exists( 'UUPD_FluentCart_Compatibility_Layer' ) ) {
 			$lines[] = "        'license_server' => {$c_server},";
 			$lines[] = "        'metadata_base'  => {$c_server},";
 			$lines[] = "        'plugin_name'    => {$c_name},";
-			$lines[] = "        'menu_parent'    => 'top_level',";
-			$lines[] = "        'menu_slug'      => {$c_menu},";
+			$menu_lines = uupd_fc_gen_menu_lines('fluentcart', $c_menu);
+            if ($menu_lines === null) return '';
+            foreach (explode("\n", trim($menu_lines)) as $menu_line) { $lines[] = $menu_line; }
+			
 			$lines[] = "        'page_title'     => {$c_name} . ' License',";
 			$lines[] = "        'menu_title'     => {$c_name} . ' License',";
 			$lines[] = "        'capability'     => 'manage_options',";
@@ -800,6 +855,7 @@ if ( ! class_exists( 'UUPD_FluentCart_Compatibility_Layer' ) ) {
 			$lines[] = "        'name'        => {$c_name},";
 			$lines[] = "        'version'     => {$c_version},";
 			$lines[] = "        'server'      => '',";
+		$lines[] = "        'license_key_transport' => 'header',";
 			$lines[] = "    ]);";
 			$lines[] = "}, 1 );";
 
@@ -819,7 +875,7 @@ if ( ! class_exists( 'UUPD_FluentCart_Compatibility_Layer' ) ) {
 				(int) ( $product['item_id'] ?? 0 )
 			);
 
-			return "<?php \$inst = \\UUPD\\UI\\License\\V1\\UUPD_License_UI::get_instance( UUPD_{$prefix}_VENDOR, UUPD_{$prefix}_SLUG ); if ( \$inst ) { \$inst->render_page(); } ?>";
+			return "<?php \\UUPD\\UI\\License\\V1\\UUPD_License_UI::render_box_for( UUPD_{$prefix}_SLUG, UUPD_{$prefix}_VENDOR ); ?>";
 		}
 
 
@@ -907,6 +963,7 @@ JS;
             ?>
             <div class="wrap">
                 <h1>UUPD FluentCart Generator</h1>
+                <?php uupd_fc_gen_menu_render('fluentcart'); ?>
                 <p>This generator creates native UUPD bootloader and inline snippets. Server-side product resolution is automatic from the FluentCart product itself, and plugin version is pulled from the FluentCart <code>license_settings</code> product meta.</p>
 
                 <form method="get" action="">

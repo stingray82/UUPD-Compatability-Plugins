@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UUPD Theme Bootloader Generator
  * Description: Adds Tools > Theme Bootloader to generate UUPD theme bootloaders from active compatibility layers.
- * Version: 1.2
+ * Version: 1.3
  * Author: Reallyusefulplugins.com
  * Author URI: https://reallyusefulplugins.com
  * Requires PHP: 7.4
@@ -12,6 +12,45 @@
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
+
+// Shared site option used by UUPD compatibility metadata endpoints.
+if ( ! function_exists( 'uupd_allow_query_license_key' ) ) {
+    function uupd_allow_query_license_key() {
+        if ( defined( 'UUPD_ALLOW_QUERY_LICENSE_KEY' ) ) { return (bool) UUPD_ALLOW_QUERY_LICENSE_KEY; }
+        return (bool) apply_filters( 'uupd_allow_query_license_key', '1' === (string) get_option( 'uupd_allow_query_license_key', '1' ) );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_option' ) ) {
+    function uupd_compat_register_transport_option() {
+        register_setting( 'uupd_compat_transport', 'uupd_allow_query_license_key', [
+            'type' => 'string', 'default' => '1',
+            'sanitize_callback' => static function ( $value ) { return '1' === (string) $value ? '1' : '0'; },
+        ] );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_settings() {
+        add_options_page( 'UUPD Key Transport', 'UUPD Key Transport', 'manage_options', 'uupd-key-transport', 'uupd_compat_render_transport_settings' );
+    }
+}
+if ( ! function_exists( 'uupd_compat_render_transport_settings' ) ) {
+    function uupd_compat_render_transport_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        ?>
+        <div class="wrap"><h1><?php esc_html_e( 'UUPD Key Transport' ); ?></h1>
+        <p><?php esc_html_e( 'Legacy URL query keys are enabled by default for backwards compatibility. Disable them after clients use Authorization: Bearer. This shared site setting is used by installed UUPD metadata adapters.' ); ?></p>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'uupd_compat_transport' ); ?>
+            <input type="hidden" name="uupd_allow_query_license_key" value="0">
+            <label><input type="checkbox" name="uupd_allow_query_license_key" value="1" <?php checked( get_option( 'uupd_allow_query_license_key', '1' ), '1' ); ?>> <?php esc_html_e( 'Accept licence keys from the legacy metadata key query parameter' ); ?></label>
+            <?php submit_button(); ?>
+        </form></div>
+        <?php
+    }
+}
+if ( false === has_action( 'admin_init', 'uupd_compat_register_transport_option' ) ) { add_action( 'admin_init', 'uupd_compat_register_transport_option' ); }
+if ( false === has_action( 'admin_menu', 'uupd_compat_register_transport_settings' ) ) { add_action( 'admin_menu', 'uupd_compat_register_transport_settings' ); }
+
 
 if ( ! class_exists( 'UUPD_Theme_Bootloader_Generator' ) ) {
     final class UUPD_Theme_Bootloader_Generator {
@@ -264,6 +303,12 @@ if ( ! class_exists( 'UUPD_Theme_Bootloader_Generator' ) ) {
             $textdomain         = sanitize_key( $args['theme_slug'] ?: 'uupd-theme' );
             $allow_opt          = 'uupd_' . $func . '_allow_prerelease';
             $settings_page_slug = 'uupd-' . sanitize_title( $args['theme_slug'] ) . '-settings';
+            $menu_mode = in_array( $args['menu_mode'] ?? 'settings', [ 'top_level', 'settings', 'custom_parent', 'embedded' ], true ) ? $args['menu_mode'] : 'settings';
+            $parent = $args['menu_parent'] ?? '';
+            $return_path = $args['return_path'] ?? '';
+            $title_menu = $args['menu_title'] ?: $args['theme_name'] . ' Licence';
+            $title_page = $args['page_title'] ?: $args['theme_name'] . ' Licence';
+
             $licence_page_slug  = 'uupd-' . sanitize_title( $args['theme_slug'] ) . '-licence';
 
             $theme_name_esc = self::esc_php_single( $args['theme_name'] );
@@ -347,6 +392,13 @@ if ( ! class_exists( 'UUPD_Theme_Bootloader_Generator' ) ) {
             $lines[] = "        'current_version'  => \$version,";
             $lines[] = "        'menu_parent'      => false,";
             $lines[] = "        'menu_slug'        => '{$licence_page_slug}',";
+            if ( $menu_mode === 'embedded' ) {
+                $lines[] = "        'return_url'       => admin_url( '" . self::esc_php_single($return_path) . "' ),";
+            } else {
+                $dest = $menu_mode === 'top_level' ? 'admin.php' : ( $menu_mode === 'custom_parent' ? $parent : 'options-general.php' );
+                $url = $menu_mode === 'custom_parent' ? 'admin.php?page=' . $licence_page_slug : $dest . '?page=' . $licence_page_slug;
+                $lines[] = "        'return_url'       => admin_url( '" . self::esc_php_single($url) . "' ),";
+            }
             $lines[] = "    ] );";
             $lines[] = "}, 1 );";
             $lines[] = "";
@@ -369,6 +421,7 @@ if ( ! class_exists( 'UUPD_Theme_Bootloader_Generator' ) ) {
             $lines[] = "            'name'             => {$const}_NAME,";
             $lines[] = "            'version'          => \$version,";
             $lines[] = "            'server'           => {$const}_SERVER,";
+		$lines[] = "            'license_key_transport' => 'header',";
             $lines[] = "            'allow_prerelease' => (bool) get_option( '{$allow_opt}', false ),";
             $lines[] = "        ] );";
             $lines[] = "    }";
@@ -480,13 +533,17 @@ if ( ! class_exists( 'UUPD_Theme_Bootloader_Generator' ) ) {
             $lines[] = " * 5) Licensing: Settings → {$theme_name_esc} Licence";
             $lines[] = " */";
             $lines[] = "add_action( 'admin_menu', function() {";
-            $lines[] = "    add_options_page(";
-            $lines[] = "        __( '{$theme_name_esc} Licence', '{$textdomain}' ),";
-            $lines[] = "        __( '{$theme_name_esc} Licence', '{$textdomain}' ),";
-            $lines[] = "        'manage_options',";
-            $lines[] = "        '{$licence_page_slug}',";
-            $lines[] = "        '{$func}_render_licence_page'";
-            $lines[] = "    );";
+            if ($menu_mode !== 'embedded') {
+                $menu_fn = $menu_mode === 'top_level' ? 'add_menu_page' : ( $menu_mode === 'settings' ? 'add_options_page' : 'add_submenu_page' );
+                $lines[] = "    {$menu_fn}(";
+                if ($menu_mode === 'custom_parent') $lines[] = "        '" . self::esc_php_single($parent) . "',";
+                $lines[] = "        '" . self::esc_php_single($title_page) . "',";
+                $lines[] = "        '" . self::esc_php_single($title_menu) . "',";
+                $lines[] = "        'manage_options',";
+                $lines[] = "        '{$licence_page_slug}',";
+                $lines[] = "        '{$func}_render_licence_page'";
+                $lines[] = "    );";
+            }
             $lines[] = "} );";
             $lines[] = "";
             $lines[] = "function {$func}_render_licence_page() {";
@@ -552,6 +609,16 @@ if ( ! class_exists( 'UUPD_Theme_Bootloader_Generator' ) ) {
             $vendor         = isset( $_GET['vendor'] ) ? sanitize_key( wp_unslash( $_GET['vendor'] ) ) : 'yourvendor';
             $server         = isset( $_GET['server'] ) ? esc_url_raw( wp_unslash( $_GET['server'] ) ) : $default_server;
             $license_ui_rel = isset( $_GET['license_ui_rel'] ) ? sanitize_text_field( wp_unslash( $_GET['license_ui_rel'] ) ) : '/uupd/class-uupd-license-ui.php';
+            $menu_mode = isset( $_GET['menu_mode'] ) ? sanitize_key( wp_unslash( $_GET['menu_mode'] ) ) : 'settings';
+            if ( ! in_array( $menu_mode, [ 'top_level', 'settings', 'custom_parent', 'embedded' ], true ) ) $menu_mode = 'settings';
+            $menu_parent = isset( $_GET['menu_parent'] ) ? trim( sanitize_text_field( wp_unslash( $_GET['menu_parent'] ) ) ) : '';
+            if ( preg_match( '~^admin\.php\?page=([a-zA-Z0-9_-]+)$~D', $menu_parent, $m ) ) $menu_parent = $m[1];
+            $return_path = isset( $_GET['return_path'] ) ? trim( sanitize_text_field( wp_unslash( $_GET['return_path'] ) ) ) : '';
+            $menu_title = isset( $_GET['menu_title'] ) ? sanitize_text_field( wp_unslash( $_GET['menu_title'] ) ) : '';
+            $page_title = isset( $_GET['page_title'] ) ? sanitize_text_field( wp_unslash( $_GET['page_title'] ) ) : '';
+            $valid_parent = preg_match( '~^(?:[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+\.php|edit\.php\?post_type=[a-zA-Z0-9_-]+)$~D', $menu_parent );
+            $valid_return = preg_match( '~^(?:admin|options-general|tools|themes|plugins|users|index|upload|edit)\.php\?page=[a-zA-Z0-9_-]+(?:\#[a-zA-Z0-9_-]+)?$~D', $return_path );
+            $menu_error = $menu_mode === 'custom_parent' && ! $valid_parent ? 'Enter an existing registered parent menu slug.' : ( $menu_mode === 'embedded' && ! $valid_return ? 'Inline-only requires an admin return path, e.g. themes.php?page=my-settings#licence.' : '' );
             $updater_rel    = isset( $_GET['updater_rel'] ) ? sanitize_text_field( wp_unslash( $_GET['updater_rel'] ) ) : '/uupd/updater.php';
 
             if ( '' === $vendor ) {
@@ -559,7 +626,7 @@ if ( ! class_exists( 'UUPD_Theme_Bootloader_Generator' ) ) {
             }
 
             $bootloader = '';
-            if ( ! empty( $selected_product ) ) {
+            if ( ! empty( $selected_product ) && ! $menu_error ) {
                 $bootloader = self::generate_bootloader(
                     [
                         'provider'       => $selected_provider,
@@ -570,6 +637,7 @@ if ( ! class_exists( 'UUPD_Theme_Bootloader_Generator' ) ) {
                         'server'         => $server,
                         'license_ui_rel' => $license_ui_rel,
                         'updater_rel'    => $updater_rel,
+                        'menu_mode' => $menu_mode, 'menu_parent' => $menu_parent, 'return_path' => $return_path, 'menu_title' => $menu_title, 'page_title' => $page_title,
                     ]
                 );
             }
@@ -611,10 +679,19 @@ if ( ! class_exists( 'UUPD_Theme_Bootloader_Generator' ) ) {
             echo '<tr><th scope="row"><label for="uupd-vendor">Vendor slug</label></th><td><input class="regular-text" id="uupd-vendor" type="text" name="vendor" value="' . esc_attr( $vendor ) . '" /><p class="description">Used in generated constants and vendor-aware registration.</p></td></tr>';
             echo '<tr><th scope="row"><label for="uupd-server">Server base</label></th><td><input class="regular-text code" id="uupd-server" type="url" name="server" value="' . esc_attr( $server ) . '" /><p class="description">Usually the current site URL where the compatibility layer is installed.</p></td></tr>';
             echo '<tr><th scope="row"><label for="uupd-license-ui-rel">License UI file</label></th><td><input class="regular-text code" id="uupd-license-ui-rel" type="text" name="license_ui_rel" value="' . esc_attr( $license_ui_rel ) . '" /></td></tr>';
+            echo '<tr><th>Licence menu placement</th><td><select id="uupd-menu-mode" name="menu_mode">';
+            foreach ( ['settings'=>'Settings submenu (existing default)','top_level'=>'Top-level menu','custom_parent'=>'Submenu under another plugin','embedded'=>'Inline only (existing page)'] as $v=>$label ) echo '<option value="' . esc_attr($v) . '" ' . selected($menu_mode,$v,false) . '>' . esc_html($label) . '</option>';
+            echo '</select></td></tr>';
+            echo '<tr class="uupd-theme-parent"><th>Existing parent menu slug</th><td><input class="regular-text" name="menu_parent" value="' . esc_attr($menu_parent) . '" placeholder="esp-example-setting-page" /></td></tr>';
+            echo '<tr class="uupd-theme-return"><th>Existing admin return path</th><td><input class="regular-text" name="return_path" value="' . esc_attr($return_path) . '" placeholder="themes.php?page=my-settings#licence" /></td></tr>';
+            echo '<tr class="uupd-theme-title"><th>Menu title (optional)</th><td><input class="regular-text" name="menu_title" value="' . esc_attr($menu_title) . '" placeholder="Theme name + Licence" /></td></tr>';
+            echo '<tr class="uupd-theme-title"><th>Page title (optional)</th><td><input class="regular-text" name="page_title" value="' . esc_attr($page_title) . '" placeholder="Theme name + Licence" /></td></tr>';
             echo '<tr><th scope="row"><label for="uupd-updater-rel">Updater file</label></th><td><input class="regular-text code" id="uupd-updater-rel" type="text" name="updater_rel" value="' . esc_attr( $updater_rel ) . '" /></td></tr>';
 
             echo '</tbody>';
             echo '</table>';
+            echo '<script>(function(){var el=document.getElementById("uupd-menu-mode");function sync(){var v=el.value;document.querySelectorAll(".uupd-theme-parent").forEach(function(r){r.style.display=v==="custom_parent"?"":"none"});document.querySelectorAll(".uupd-theme-return").forEach(function(r){r.style.display=v==="embedded"?"":"none"});document.querySelectorAll(".uupd-theme-title").forEach(function(r){r.style.display=v==="embedded"?"none":""});}el.addEventListener("change",sync);sync();})();</script>';
+            if ($menu_error) echo '<div class="notice notice-error"><p>' . esc_html($menu_error) . '</p></div>';
             submit_button( 'Generate bootloader' );
             echo '</form>';
 
@@ -624,6 +701,11 @@ if ( ! class_exists( 'UUPD_Theme_Bootloader_Generator' ) ) {
                 echo '<p><strong>Detected source:</strong> ' . esc_html( $providers[ $selected_provider ]['label'] ) . ' &nbsp; <strong>Item ID:</strong> ' . esc_html( (string) $selected_product['item_id'] ) . ' &nbsp; <strong>Source slug:</strong> ' . esc_html( $selected_product['slug'] ) . ' &nbsp; <strong>Vendor:</strong> ' . esc_html( $vendor ) . '</p>';
                 echo '<p><button type="button" class="button button-secondary" data-uupd-copy-target="uupd-theme-bootloader-code">Copy bootloader</button></p>';
                 echo '<textarea id="uupd-theme-bootloader-code" class="large-text code" rows="44" readonly>' . esc_textarea( $bootloader ) . '</textarea>';
+                $stem = self::build_constant_stem($vendor, $theme_name, $theme_slug);
+                $inline = "<?php \UUPD\UI\License\V1\UUPD_License_UI::render_box_for( {$stem}_SLUG, {$stem}_VENDOR ); ?>";
+                echo '<h3>Copy inline licence box</h3><p>Paste into an existing admin page only after the bootloader has registered the licence instance.</p>';
+                echo '<p><button type="button" class="button" data-uupd-copy-target="uupd-theme-inline-code">Copy inline box</button></p>';
+                echo '<textarea id="uupd-theme-inline-code" class="large-text code" rows="3" readonly>' . esc_textarea($inline) . '</textarea>';
             }
 
             echo '</div>';

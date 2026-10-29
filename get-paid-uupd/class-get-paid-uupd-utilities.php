@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . "/uupd-generator-menu.php";
 
 /**
  * Reorder GetPaid downloads so the newest-added file(s) appear at the top of
@@ -478,6 +479,7 @@ if ( ! function_exists( 'wpi_uupd_render_settings_page' ) ) {
         ?>
         <div class="wrap">
             <h1>UUPD GetPaid Settings</h1>
+            <?php uupd_gp_gen_menu_render('getpaid'); ?>
             <form method="post">
                 <?php wp_nonce_field( 'wpi_uupd_save_vendor', 'wpi_uupd_vendor_nonce' ); ?>
                 <table class="form-table" role="presentation">
@@ -491,49 +493,18 @@ if ( ! function_exists( 'wpi_uupd_render_settings_page' ) ) {
                 </table>
                 <?php submit_button( 'Save vendor' ); ?>
             </form>
+            <?php wpi_uupd_render_generator_preview(); ?>
         </div>
         <?php
     }
 }
 
-/* Add our Coloums and our Bootstap Copy  */
-
-/**
- * Columns
- */
-add_filter( 'manage_edit-wpi_item_columns', function( $columns ) {
-
-    $new = [];
-    foreach ( $columns as $key => $label ) {
-        $new[$key] = $label;
-
-        if ( 'title' === $key ) {
-            $new['wpi_bootloader_copy'] = 'Bootloader';
-            $new['wpi_inline_copy']     = 'Inline display';
-        }
-    }
-
-    if ( ! isset( $new['wpi_bootloader_copy'] ) ) {
-        $new['wpi_bootloader_copy'] = 'Bootloader';
-        $new['wpi_inline_copy']     = 'Inline display';
-    }
-
-    return $new;
-}, 20 );
-
-
-/**
- * Column content
- */
-add_action( 'manage_wpi_item_posts_custom_column', function( $column, $post_id ) {
-
-    if ( $column !== 'wpi_bootloader_copy' && $column !== 'wpi_inline_copy' ) {
-        return;
-    }
-
+/** Generate GetPaid bootloader and inline snippet for the settings-page preview. */
+function wpi_uupd_generate_item_snippets( $post_id ) {
+    $post_id = absint( $post_id );
     $post = get_post( $post_id );
-    if ( ! $post ) {
-        return;
+    if ( ! $post || $post->post_type !== 'wpi_item' ) {
+        return null;
     }
 
     $friendly = html_entity_decode( get_the_title( $post_id ), ENT_QUOTES, 'UTF-8' );
@@ -603,10 +574,17 @@ add_action( 'manage_wpi_item_posts_custom_column', function( $column, $post_id )
     $lines[] = "        'license_server' => {$c_server},";
     $lines[] = "        'metadata_base'  => {$c_server},";
     $lines[] = "        'plugin_name'    => {$c_name},";
-    $lines[] = "        'menu_parent'    => 'top_level',";
-    $lines[] = "        'menu_slug'      => {$c_menu},";
-    $lines[] = "        'page_title'     => {$c_name} . ' License',";
-    $lines[] = "        'menu_title'     => {$c_name} . ' License',";
+    $menu_lines = uupd_gp_gen_menu_lines('getpaid', $c_menu);
+    if ($menu_lines === null) return null;
+    foreach (explode("\n", trim($menu_lines)) as $menu_line) { $lines[] = $menu_line; }
+    
+    $menu_settings = uupd_gp_gen_menu_settings('getpaid');
+    $custom_page_title = trim((string) $menu_settings['page_title']);
+    $custom_menu_title = trim((string) $menu_settings['menu_title']);
+    if ($menu_settings['placement'] !== 'embedded') {
+        $lines[] = "        'page_title'     => " . ($custom_page_title !== '' ? var_export($custom_page_title, true) : "{$c_name} . ' License'") . ",";
+        $lines[] = "        'menu_title'     => " . ($custom_menu_title !== '' ? var_export($custom_menu_title, true) : "{$c_name} . ' License'") . ",";
+    }
     $lines[] = "        'capability'     => 'manage_options',";
     $lines[] = "        'pass_token'     => false,";
     $lines[] = "        'token_param'    => 'token',";
@@ -619,74 +597,61 @@ add_action( 'manage_wpi_item_posts_custom_column', function( $column, $post_id )
     $lines[] = "        'name'        => {$c_name},";
     $lines[] = "        'version'     => {$c_version},";
     $lines[] = "        'server'      => '',";
+		$lines[] = "        'license_key_transport' => 'header',";
     $lines[] = "    ]);";
     $lines[] = "}, 1 );";
 
     $bootloader = implode( "\n", $lines );
 
-    $inline = "<?php \$inst = \\UUPD\\UI\\License\\V1\\UUPD_License_UI::get_instance( {$c_vendor}, {$c_slug} ); if ( \$inst ) { \$inst->render_page(); } ?>";
+    $inline = "<?php \\UUPD\\UI\\License\\V1\\UUPD_License_UI::render_box_for( {$c_slug}, {$c_vendor} ); ?>";
 
-    if ( $column === 'wpi_bootloader_copy' ) {
-        printf(
-            '<button type="button" class="button button-small wpi-copy-btn" data-wpi-copy="%s">Copy bootloader</button>',
-            esc_attr( $bootloader )
-        );
-    } else {
-        printf(
-            '<button type="button" class="button button-small wpi-copy-btn" data-wpi-copy="%s">Copy inline</button>',
-            esc_attr( $inline )
-        );
-    }
+    return [ 'bootloader' => $bootloader, 'inline' => $inline ];
+}
 
-}, 10, 2 );
-
-
-
-/**
- * JS (admin list only)
- */
-add_action( 'admin_enqueue_scripts', function( $hook ) {
-    if ( $hook !== 'edit.php' ) return;
-
-    $screen = function_exists('get_current_screen') ? get_current_screen() : null;
-    if ( ! $screen || $screen->id !== 'edit-wpi_item' ) return;
-
-    wp_register_script( 'wpi-item-copy-columns', '', [], '1.0', true );
-    wp_enqueue_script( 'wpi-item-copy-columns' );
-
-    $js = "(function(){
-      function copyText(text){
-        if(navigator.clipboard && window.isSecureContext){
-          return navigator.clipboard.writeText(text);
-        }
-        return new Promise(function(resolve,reject){
-          try{
-            var ta=document.createElement('textarea');
-            ta.value=text;
-            ta.setAttribute('readonly','');
-            ta.style.position='fixed';
-            ta.style.top='-9999px';
-            document.body.appendChild(ta);
-            ta.select();
-            var ok=document.execCommand('copy');
-            document.body.removeChild(ta);
-            ok?resolve():reject();
-          }catch(e){reject(e);}
-        });
-      }
-      document.addEventListener('click',function(e){
-        var btn=e.target.closest('.wpi-copy-btn');
-        if(!btn) return;
-        var payload=btn.getAttribute('data-wpi-copy')||'';
-        copyText(payload).then(function(){
-          var old=btn.textContent;
-          btn.textContent='Copied!';
-          setTimeout(function(){ btn.textContent=old; }, 900);
-        }).catch(function(){
-          alert('Copy failed. Please copy manually.');
-        });
-      });
-    })();";
-
-    wp_add_inline_script( 'wpi-item-copy-columns', $js );
-});
+/** Select a GetPaid item and copy generated code from the settings submenu. */
+function wpi_uupd_render_generator_preview() {
+    if ( ! current_user_can( 'manage_options' ) ) return;
+    $items = get_posts( [
+        'post_type' => 'wpi_item',
+        'post_status' => [ 'publish', 'draft', 'private', 'pending' ],
+        'numberposts' => 100,
+        'orderby' => 'title',
+        'order' => 'ASC',
+    ] );
+    $selected = isset( $_GET['uupd_item_id'] ) ? absint( wp_unslash( $_GET['uupd_item_id'] ) ) : 0;
+    if ( ! $selected && $items ) $selected = (int) $items[0]->ID;
+    ?>
+    <div class="postbox" style="padding:16px 20px;max-width:900px;margin-top:18px">
+       <h2>Generate bootloader and inline licence box</h2>
+       <p>Choose the GetPaid item, save any licence menu settings above, then copy the generated code below. The item-list table no longer contains duplicate copy buttons.</p>
+       <form method="get">
+          <input type="hidden" name="page" value="uupd-getpaid-settings">
+          <label for="uupd-gp-item">GetPaid item</label>
+          <select id="uupd-gp-item" name="uupd_item_id">
+          <?php foreach ( $items as $item ) : ?>
+             <option value="<?php echo esc_attr( $item->ID ); ?>" <?php selected( $selected, $item->ID ); ?>><?php echo esc_html( $item->post_title . ' (#' . $item->ID . ')' ); ?></option>
+          <?php endforeach; ?>
+          </select>
+          <button class="button">Generate for selected item</button>
+       </form>
+       <?php
+       if ( ! $items ) {
+           echo '<p>No GetPaid items found. Create an item first.</p>';
+       } elseif ( $selected ) {
+           $result = wpi_uupd_generate_item_snippets( $selected );
+           if ( ! $result ) {
+               echo '<p class="notice notice-error">Unable to generate. Check the selected item and licence menu settings.</p>';
+           } else {
+               foreach ( [ 'bootloader' => 'Bootloader (main plugin file)', 'inline' => 'Inline licence box (settings page callback)' ] as $key => $label ) {
+                   $id = 'uupd-gp-' . $key;
+                   echo '<h3>' . esc_html( $label ) . '</h3>';
+                   echo '<textarea id="' . esc_attr( $id ) . '" class="large-text code" rows="' . ( $key === 'bootloader' ? '16' : '3' ) . '" readonly>' . esc_textarea( $result[$key] ) . '</textarea>';
+                   echo '<p><button type="button" class="button uupd-gp-copy" data-target="' . esc_attr( $id ) . '">Copy ' . esc_html( $key ) . '</button></p>';
+               }
+           }
+       }
+       ?>
+    </div>
+    <script>(function(){document.addEventListener('click',function(e){var b=e.target.closest('.uupd-gp-copy');if(!b)return;var t=document.getElementById(b.getAttribute('data-target'));if(!t)return;if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t.value).then(function(){b.textContent='Copied!';});}else{t.select();document.execCommand('copy');b.textContent='Copied!';}});})();</script>
+    <?php
+}

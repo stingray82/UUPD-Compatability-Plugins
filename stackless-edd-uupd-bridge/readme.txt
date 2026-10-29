@@ -3,7 +3,7 @@ Contributors: tdlab
 Tags: easy digital downloads, stackless edd, uupd, software licensing, updater
 Requires at least: 6.5
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.1
 License: GPLv2 or later
 
 Connects Stackless EDD Software Licensing to UUPD updater clients and deploy.sh release publishing. Adds per-download bootloader generation, update artwork controls, metadata sections and order licence key copying.

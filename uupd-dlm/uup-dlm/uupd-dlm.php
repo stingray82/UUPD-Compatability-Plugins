@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UUPD > Digital License Manager
  * Description: UUPD compatibility layer for Digital License Manager + Digital License Manager Pro software releases.
- * Version: 0.4.0
+ * Version: 0.4.1
  * Author: Reallyusefulplugins.com
  * Requires PHP: 7.4
  */
@@ -10,6 +10,57 @@
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
+
+if ( ! function_exists( 'uupd_compat_metadata_key' ) ) {
+    function uupd_compat_metadata_key( $request = null ) {
+        $authorization = $request instanceof WP_REST_Request ? $request->get_header( 'authorization' ) : '';
+        if ( '' === $authorization && isset( $_SERVER['HTTP_AUTHORIZATION'] ) ) { $authorization = wp_unslash( $_SERVER['HTTP_AUTHORIZATION'] ); }
+        if ( preg_match( '/^Bearer\s+(.+)$/i', trim( (string) $authorization ), $matches ) ) { return trim( $matches[1] ); }
+        $query = $request instanceof WP_REST_Request ? $request->get_query_params() : $_GET;
+        if ( ( isset( $query['key'] ) || isset( $query['license_key'] ) ) && ! uupd_allow_query_license_key() ) { return ''; }
+        if ( $request instanceof WP_REST_Request ) { return (string) ( $request->get_param( 'key' ) ?: $request->get_param( 'license_key' ) ); }
+        return isset( $_GET['key'] ) ? (string) wp_unslash( $_GET['key'] ) : ( isset( $_GET['license_key'] ) ? (string) wp_unslash( $_GET['license_key'] ) : '' );
+    }
+}
+
+if ( ! function_exists( 'uupd_allow_query_license_key' ) ) {
+    function uupd_allow_query_license_key() {
+        if ( defined( 'UUPD_ALLOW_QUERY_LICENSE_KEY' ) ) {
+            return (bool) UUPD_ALLOW_QUERY_LICENSE_KEY;
+        }
+        return (bool) apply_filters( 'uupd_allow_query_license_key', '1' === (string) get_option( 'uupd_allow_query_license_key', '1' ) );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_option() {
+        register_setting( 'uupd_compat_transport', 'uupd_allow_query_license_key', [
+            'type' => 'string', 'default' => '1', 'sanitize_callback' => static function ( $value ) { return '1' === (string) $value ? '1' : '0'; },
+        ] );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_settings() {
+        add_options_page( 'UUPD Key Transport', 'UUPD Key Transport', 'manage_options', 'uupd-key-transport', 'uupd_compat_render_transport_settings' );
+    }
+}
+if ( ! function_exists( 'uupd_compat_render_transport_settings' ) ) {
+    function uupd_compat_render_transport_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        ?>
+        <div class="wrap"><h1><?php esc_html_e( 'UUPD Key Transport' ); ?></h1>
+        <p><?php esc_html_e( 'Legacy URL query keys are enabled by default for backwards compatibility. Disable them after clients have moved to Authorization: Bearer.' ); ?></p>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'uupd_compat_transport' ); ?>
+            <input type="hidden" name="uupd_allow_query_license_key" value="0">
+            <label><input type="checkbox" name="uupd_allow_query_license_key" value="1" <?php checked( get_option( 'uupd_allow_query_license_key', '1' ), '1' ); ?>> <?php esc_html_e( 'Accept licence keys from the legacy key query parameter' ); ?></label>
+            <?php submit_button(); ?>
+        </form></div>
+        <?php
+    }
+}
+if ( false === has_action( 'admin_init', 'uupd_compat_register_transport_option' ) ) { add_action( 'admin_init', 'uupd_compat_register_transport_option' ); }
+if ( false === has_action( 'admin_menu', 'uupd_compat_register_transport_settings' ) ) { add_action( 'admin_menu', 'uupd_compat_register_transport_settings' ); }
+
 
 if ( ! class_exists( 'UUPD_DLM_Compatibility_Layer' ) ) {
 final class UUPD_DLM_Compatibility_Layer {
@@ -24,7 +75,6 @@ final class UUPD_DLM_Compatibility_Layer {
         add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
         add_action( 'init', [ __CLASS__, 'maybe_handle_legacy_metadata' ], 0 );
         add_action( 'admin_menu', [ __CLASS__, 'register_admin_page' ] );
-        add_action( 'admin_enqueue_scripts', [ __CLASS__, 'enqueue_dlm_admin_enhancements' ], 50 );
         add_action( 'wp_ajax_uupd_dlm_get_snippet', [ __CLASS__, 'ajax_get_snippet' ] );
         add_action( 'admin_post_uupd_dlm_save_settings', [ __CLASS__, 'save_settings' ] );
     }
@@ -55,7 +105,7 @@ final class UUPD_DLM_Compatibility_Layer {
         }
 
         $slug    = isset( $_GET['slug'] ) ? sanitize_key( wp_unslash( $_GET['slug'] ) ) : '';
-        $key     = isset( $_GET['key'] ) ? self::sanitize_license_key( wp_unslash( $_GET['key'] ) ) : '';
+        $key     = uupd_compat_metadata_key();
         $domain  = isset( $_GET['domain'] ) ? sanitize_text_field( wp_unslash( $_GET['domain'] ) ) : '';
         $channel = isset( $_GET['release_channel'] ) ? sanitize_key( wp_unslash( $_GET['release_channel'] ) ) : 'stable';
         $allow   = ! empty( $_GET['allow_prerelease'] );
@@ -195,7 +245,7 @@ final class UUPD_DLM_Compatibility_Layer {
 
     public static function handle_metadata_request( WP_REST_Request $request ) {
         $slug    = sanitize_key( (string) $request->get_param( 'slug' ) );
-        $key     = self::sanitize_license_key( (string) $request->get_param( 'key' ) );
+        $key     = self::sanitize_license_key( uupd_compat_metadata_key( $request ) );
         $domain  = sanitize_text_field( (string) $request->get_param( 'domain' ) );
         $channel = sanitize_key( (string) $request->get_param( 'release_channel' ) );
         $allow   = ! empty( $request->get_param( 'allow_prerelease' ) );
@@ -601,7 +651,11 @@ final class UUPD_DLM_Compatibility_Layer {
             'allow_prerelease'   => 0,
             'release_channel'    => 'stable',
             'menu_parent'        => 'top_level',
+            'menu_location'      => 'top_level',
+            'menu_slug'          => '',
+            'return_path'        => '',
             'menu_title_pattern' => '{name} License',
+            'page_title_pattern' => '',
             'server_base'        => '',
             'explicit_server'    => 1,
         ];
@@ -640,10 +694,21 @@ final class UUPD_DLM_Compatibility_Layer {
             'allow_prerelease'   => ! empty( $_POST['allow_prerelease'] ) ? 1 : 0,
             'release_channel'    => $channel,
             'menu_parent'        => isset( $_POST['menu_parent'] ) ? sanitize_text_field( wp_unslash( $_POST['menu_parent'] ) ) : 'top_level',
+            'menu_location'      => isset( $_POST['menu_location'] ) ? sanitize_key( wp_unslash( $_POST['menu_location'] ) ) : 'top_level',
+            'menu_slug'          => isset( $_POST['menu_slug'] ) ? sanitize_key( wp_unslash( $_POST['menu_slug'] ) ) : '',
+            'return_path'        => isset( $_POST['return_path'] ) ? trim( sanitize_text_field( wp_unslash( $_POST['return_path'] ) ) ) : '',
             'menu_title_pattern' => isset( $_POST['menu_title_pattern'] ) ? sanitize_text_field( wp_unslash( $_POST['menu_title_pattern'] ) ) : '{name} License',
+            'page_title_pattern' => isset( $_POST['page_title_pattern'] ) ? sanitize_text_field( wp_unslash( $_POST['page_title_pattern'] ) ) : '',
             'server_base'        => isset( $_POST['server_base'] ) ? esc_url_raw( trim( wp_unslash( $_POST['server_base'] ) ) ) : '',
             'explicit_server'    => ! empty( $_POST['explicit_server'] ) ? 1 : 0,
         ];
+        if (!in_array($settings['menu_location'], ['top_level','settings','custom_parent','embedded'], true)) $settings['menu_location']='top_level';
+        if ($settings['menu_location']==='embedded' && !preg_match('~^(admin|options-general|tools|themes|plugins|users|index|upload|edit)\.php\?page=[a-zA-Z0-9_-]+(?:\#[a-zA-Z0-9_-]+)?$~D', $settings['return_path'])) {
+            wp_die('Embedded mode requires a valid registered admin path such as admin.php?page=my-plugin-settings.');
+        }
+        if (preg_match('~^admin\.php\?page=([a-zA-Z0-9_-]+)$~D', $settings['menu_parent'], $m)) $settings['menu_parent'] = $m[1];
+        if ($settings['menu_location']==='custom_parent' && $settings['menu_slug'] !== '' && $settings['menu_slug'] === $settings['menu_parent']) wp_die('Child licence menu slug must differ from its parent.');
+        if ($settings['menu_location']==='custom_parent' && !preg_match('~^(?:[a-zA-Z0-9_-]+(?:\.php)?|edit\.php\?post_type=[a-zA-Z0-9_-]+)$~D',$settings['menu_parent'])) wp_die('Invalid custom parent admin file.');
         update_option( self::OPTION_SETTINGS, $settings, false );
         if ( $settings['vendor'] ) {
             update_option( self::OPTION_VENDOR, $settings['vendor'], false );
@@ -681,8 +746,13 @@ final class UUPD_DLM_Compatibility_Layer {
                     <tr><th><label for="license_ui_path">License UI include path</label></th><td><input class="regular-text code" id="license_ui_path" name="license_ui_path" value="<?php echo esc_attr( $s['license_ui_path'] ); ?>" /></td></tr>
                     <tr><th>Prereleases</th><td><label><input type="checkbox" name="allow_prerelease" value="1" <?php checked( ! empty( $s['allow_prerelease'] ) ); ?> /> Allow prerelease versions by default</label></td></tr>
                     <tr><th><label for="release_channel">Default release channel</label></th><td><select id="release_channel" name="release_channel"><?php foreach ( [ 'stable', 'dev', 'alpha', 'beta', 'rc', 'prerelease' ] as $ch ) : ?><option value="<?php echo esc_attr( $ch ); ?>" <?php selected( $s['release_channel'], $ch ); ?>><?php echo esc_html( $ch ); ?></option><?php endforeach; ?></select><p class="description">DLM has stable/alpha/beta/rc. UUPD dev currently falls back to stable.</p></td></tr>
-                    <tr><th><label for="menu_parent">License menu parent</label></th><td><input class="regular-text" id="menu_parent" name="menu_parent" value="<?php echo esc_attr( $s['menu_parent'] ); ?>" /><p class="description"><code>top_level</code>, <code>options-general.php</code>, or another admin parent slug.</p></td></tr>
-                    <tr><th><label for="menu_title_pattern">Menu/page title pattern</label></th><td><input class="regular-text" id="menu_title_pattern" name="menu_title_pattern" value="<?php echo esc_attr( $s['menu_title_pattern'] ); ?>" /><p class="description">Use <code>{name}</code> for the DLM Software name.</p></td></tr>
+                    <tr><th><label for="menu_location">Licence menu location</label></th><td><select id="menu_location" name="menu_location"><option value="top_level" <?php selected($s['menu_location'],'top_level'); ?>>Top-level menu</option><option value="settings" <?php selected($s['menu_location'],'settings'); ?>>Settings submenu</option><option value="custom_parent" <?php selected($s['menu_location'],'custom_parent'); ?>>Custom parent submenu</option><option value="embedded" <?php selected($s['menu_location'],'embedded'); ?>>Existing page / inline-only</option></select></td></tr>
+                    <tr class="uupd-dlm-menu-parent"><th><label for="menu_parent">Custom parent menu slug</label></th><td><input class="regular-text" id="menu_parent" name="menu_parent" value="<?php echo esc_attr( $s['menu_parent'] ); ?>" placeholder="esp-example-setting-page" /></td></tr>
+                    <tr class="uupd-dlm-menu-slug"><th><label for="menu_slug">Custom licence menu slug</label></th><td><input class="regular-text" id="menu_slug" name="menu_slug" value="<?php echo esc_attr( $s['menu_slug'] ); ?>" placeholder="Leave blank for vendor-plugin" /></td></tr>
+                    <tr class="uupd-dlm-return"><th><label for="return_path">Embedded admin return path</label></th><td><input class="regular-text" id="return_path" name="return_path" value="<?php echo esc_attr( $s['return_path'] ); ?>" placeholder="admin.php?page=my-settings#licence" /><p class="description">Required for existing-page mode.</p></td></tr>
+                    <script>(function(){var el=document.getElementById('menu_location');function sync(){var m=el.value;document.querySelector('.uupd-dlm-menu-parent').style.display=m==='custom_parent'?'':'none';document.querySelector('.uupd-dlm-menu-slug').style.display=m==='embedded'?'none':'';document.querySelectorAll('.uupd-dlm-menu-title').forEach(function(r){r.style.display=m==='embedded'?'none':'';});document.querySelector('.uupd-dlm-return').style.display=m==='embedded'?'':'none';document.getElementById('return_path').required=m==='embedded';}el.addEventListener('change',sync);sync();})();</script>
+                    <tr class="uupd-dlm-menu-title"><th><label for="menu_title_pattern">Menu/page title pattern</label></th><td><input class="regular-text" id="menu_title_pattern" name="menu_title_pattern" value="<?php echo esc_attr( $s['menu_title_pattern'] ); ?>" /><p class="description">Use <code>{name}</code> for the DLM Software name.</p></td></tr>
+                    <tr class="uupd-dlm-menu-title"><th><label for="page_title_pattern">Page title (optional)</label></th><td><input class="regular-text" id="page_title_pattern" name="page_title_pattern" value="<?php echo esc_attr( $s['page_title_pattern'] ); ?>" placeholder="Defaults to menu/page title pattern" /></td></tr>
                     <tr><th><label for="server_base">Server base override</label></th><td><input class="regular-text code" id="server_base" name="server_base" value="<?php echo esc_attr( $s['server_base'] ); ?>" placeholder="<?php echo esc_attr( home_url( '/' ) ); ?>" /><p class="description">Leave blank to use this site's home URL.</p></td></tr>
                     <tr><th>Updater server line</th><td><label><input type="checkbox" name="explicit_server" value="1" <?php checked( ! empty( $s['explicit_server'] ) ); ?> /> Put the server URL explicitly into <code>UUPD_Updater_V2::register()</code></label><p class="description">The License UI will inject metadata_base anyway; keeping this enabled makes generated code self-explanatory.</p></td></tr>
                 </tbody></table>
@@ -690,88 +760,6 @@ final class UUPD_DLM_Compatibility_Layer {
             </form>
         </div>
         <?php
-    }
-
-    public static function enqueue_dlm_admin_enhancements( $hook ) {
-        if ( false === strpos( (string) $hook, 'dlm-software' ) ) {
-            return;
-        }
-        if ( ! current_user_can( 'manage_options' ) ) {
-            return;
-        }
-        $settings_url = self::admin_page_url( 'settings' );
-        wp_register_script( 'uupd-dlm-admin', false, [], self::VERSION, true );
-        wp_enqueue_script( 'uupd-dlm-admin' );
-        wp_localize_script( 'uupd-dlm-admin', 'UUPDDLMAdmin', [
-            'ajaxUrl'     => admin_url( 'admin-ajax.php' ),
-            'nonce'       => wp_create_nonce( 'uupd_dlm_copy_snippet' ),
-            'settingsUrl' => $settings_url,
-            'copyLabel'   => 'Copy UUPD',
-            'copiedLabel' => 'Copied!',
-        ] );
-        $js = <<<'JS'
-(function(){
-    if (!window.UUPDDLMAdmin) return;
-    function getIdFromHref(href) {
-        var m = String(href || '').match(/#\/software\/(\d+)(?:\/|$)/);
-        return m ? parseInt(m[1], 10) : 0;
-    }
-    async function copySnippet(id, btn) {
-        if (!id || btn.dataset.busy === '1') return;
-        btn.dataset.busy = '1';
-        var old = btn.textContent;
-        btn.textContent = '…';
-        var snippet = '';
-        try {
-            var body = new URLSearchParams({action:'uupd_dlm_get_snippet', nonce:UUPDDLMAdmin.nonce, software_id:String(id)});
-            var res = await fetch(UUPDDLMAdmin.ajaxUrl, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'}, body:body.toString()});
-            var json = await res.json();
-            if (!json.success || !json.data || !json.data.snippet) throw new Error((json.data && json.data.message) || 'Unable to generate UUPD snippet.');
-            snippet = json.data.snippet;
-            await navigator.clipboard.writeText(snippet);
-            btn.textContent = UUPDDLMAdmin.copiedLabel;
-            setTimeout(function(){ btn.textContent = old; }, 1400);
-        } catch (e) {
-            if (snippet) { window.prompt('Copy UUPD bootstrap:', snippet); } else { window.alert(e && e.message ? e.message : 'Unable to generate UUPD snippet.'); }
-            btn.textContent = old;
-            console.error('[UUPD DLM]', e);
-        } finally { btn.dataset.busy = '0'; }
-    }
-    function makeButton(id) {
-        var b=document.createElement('button'); b.type='button'; b.className='dlm-btn dlm-btn-secondary dlm-btn-sm uupd-dlm-copy'; b.textContent=UUPDDLMAdmin.copyLabel; b.dataset.softwareId=String(id);
-        b.style.marginLeft='8px'; b.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();copySnippet(id,b);}); return b;
-    }
-    function enhance() {
-        document.querySelectorAll('#dlm-software a.dlm-link[href*="#/software/"]').forEach(function(a){
-            var id=getIdFromHref(a.href); if(!id || a.parentElement.querySelector('.uupd-dlm-copy')) return; a.insertAdjacentElement('afterend', makeButton(id));
-        });
-        var hm=String(location.hash||'').match(/^#\/software\/(\d+)(?:\/|$)/);
-        var actions=document.querySelector('#dlm-software .dlm-page-actions');
-        if(actions && hm && !actions.querySelector('.uupd-dlm-copy')){
-            var copy=makeButton(parseInt(hm[1],10));
-            copy.classList.remove('dlm-btn-sm');
-            copy.style.marginLeft='0';
-            actions.insertBefore(copy, actions.firstChild);
-        }
-        if(actions && !actions.querySelector('.uupd-dlm-settings')){ var a=document.createElement('a'); a.className='dlm-btn dlm-btn-secondary uupd-dlm-settings'; a.href=UUPDDLMAdmin.settingsUrl; a.textContent='UUPD Settings'; var copyBtn=actions.querySelector('.uupd-dlm-copy'); if(copyBtn && copyBtn.nextSibling){actions.insertBefore(a,copyBtn.nextSibling);}else{actions.insertBefore(a, actions.firstChild);} }
-    }
-    var obs=new MutationObserver(enhance); obs.observe(document.getElementById('dlm-software')||document.body,{childList:true,subtree:true}); window.addEventListener('hashchange',function(){setTimeout(enhance,50)}); enhance();
-})();
-JS;
-        wp_add_inline_script( 'uupd-dlm-admin', $js );
-    }
-
-    public static function ajax_get_snippet() {
-        if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( [ 'message' => 'Insufficient permissions.' ], 403 );
-        }
-        check_ajax_referer( 'uupd_dlm_copy_snippet', 'nonce' );
-        $id = isset( $_POST['software_id'] ) ? absint( $_POST['software_id'] ) : 0;
-        $software = $id ? self::find_software_by_id( $id ) : null;
-        if ( ! $software ) {
-            wp_send_json_error( [ 'message' => 'Software not found.' ], 404 );
-        }
-        wp_send_json_success( [ 'snippet' => self::build_bootloader_snippet( $software ) ] );
     }
 
     protected static function find_software_by_id( $id ) {
@@ -806,8 +794,18 @@ JS;
         $ui_path      = self::sanitize_include_path( $settings['license_ui_path'] ?? '/inc/class-uupd-license-ui.php' );
         $allow        = ! empty( $settings['allow_prerelease'] ) ? 'true' : 'false';
         $channel      = in_array( $settings['release_channel'] ?? 'stable', [ 'stable', 'dev', 'alpha', 'beta', 'rc', 'prerelease' ], true ) ? $settings['release_channel'] : 'stable';
-        $menu_parent  = (string) ( $settings['menu_parent'] ?? 'top_level' );
-        $title        = str_replace( '{name}', $name, (string) ( $settings['menu_title_pattern'] ?? '{name} License' ) );
+        $menu_mode = $settings['menu_location'] ?? 'top_level';
+        $menu_parent = $menu_mode === 'embedded' ? false : ($menu_mode === 'settings' ? 'options-general.php' : ($menu_mode === 'custom_parent' ? $settings['menu_parent'] : 'top_level'));
+        $menu_parent_php = var_export($menu_parent, true);
+        $menu_slug = !empty($settings['menu_slug']) ? var_export($settings['menu_slug'],true) : 'UUPD_' . $prefix . '_MENU_SLUG';
+        $return_line = '';
+        if ($menu_mode === 'embedded') {
+            $path = $settings['return_path'];
+            if (!preg_match('~^(admin|options-general|tools|themes|plugins|users|index|upload|edit)\.php\?page=[a-zA-Z0-9_-]+(?:\#[a-zA-Z0-9_-]+)?$~D', $path)) return '';
+            $return_line = "        'return_url'     => admin_url( " . var_export($path,true) . " ),";
+        }
+        $title        = str_replace( '{name}', $name, (string) ( $settings['menu_title_pattern'] ?: '{name} License' ) );
+        $page_title   = str_replace( '{name}', $name, (string) ( $settings['page_title_pattern'] ?: $settings['menu_title_pattern'] ?: '{name} License' ) );
         $esc = static function( $v ) { return str_replace( [ '\\', "'" ], [ '\\\\', "\\'" ], (string) $v ); };
 
         $server_line = ! empty( $settings['explicit_server'] )
@@ -835,14 +833,16 @@ JS;
             "        'license_server' => UUPD_{$prefix}_SERVER_BASE,",
             "        'metadata_base'  => UUPD_{$prefix}_SERVER_BASE,",
             "        'plugin_name'    => UUPD_{$prefix}_FRIENDLY_NAME,",
-            "        'menu_parent'    => '" . $esc( $menu_parent ) . "',",
-            "        'menu_slug'      => UUPD_{$prefix}_MENU_SLUG,",
-            "        'page_title'     => '" . $esc( $title ) . "',",
+            "        'menu_parent'    => " . $menu_parent_php . ",",
+            "        'menu_slug'      => " . $menu_slug . ",",
+            $return_line,
+            "        'page_title'     => '" . $esc( $page_title ) . "',",
             "        'menu_title'     => '" . $esc( $title ) . "',",
             "        'capability'     => 'manage_options',",
             "    ]);",
             '',
             "    \UUPD\V2\UUPD_Updater_V2::register([",
+            "        'license_key_transport' => 'header',",
             "        'vendor'           => UUPD_{$prefix}_VENDOR,",
             "        'plugin_file'      => plugin_basename( UUPD_{$prefix}_MAIN_FILE ),",
             "        'slug'             => UUPD_{$prefix}_SLUG,",
@@ -902,7 +902,19 @@ JS;
                     <tr><th>Metadata server</th><td><code><?php echo esc_html( home_url( '/' ) ); ?></code></td></tr>
                 </tbody></table>
                 <h2>Bootloader snippet</h2>
-                <textarea class="large-text code" rows="30" readonly><?php echo esc_textarea( $snippet ); ?></textarea>
+                <textarea id="uupd-dlm-bootloader" class="large-text code" rows="30" readonly><?php echo esc_textarea( $snippet ); ?></textarea>
+                <p><button type="button" class="button uupd-dlm-copy-snippet" data-target="uupd-dlm-bootloader">Copy bootloader</button></p>
+                <h2>Inline licence box</h2>
+                <p>Place this inside the existing admin page after the bootloader is registered.</p>
+                <?php
+                    $name = self::software_slug( $software );
+                    $vendor = self::get_vendor() ?: 'yourvendor';
+                    $constant_base = strtoupper( preg_replace( '/[^A-Za-z0-9]+/', '_', $vendor . '_' . $name ) );
+                    $inline = "<?php \UUPD\UI\License\V1\UUPD_License_UI::render_box_for( UUPD_{$constant_base}_SLUG, UUPD_{$constant_base}_VENDOR ); ?>";
+                ?>
+                <textarea id="uupd-dlm-inline" class="large-text code" rows="4" readonly><?php echo esc_textarea( $inline ); ?></textarea>
+                <p><button type="button" class="button uupd-dlm-copy-snippet" data-target="uupd-dlm-inline">Copy inline licence box</button></p>
+                <script>(function(){document.querySelectorAll('.uupd-dlm-copy-snippet').forEach(function(b){b.addEventListener('click',function(){var e=document.getElementById(b.dataset.target);if(!e)return;var t=e.value;if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(function(){b.textContent='Copied!';}).catch(function(){window.prompt('Copy code:',t);});}else{window.prompt('Copy code:',t);}});});})();</script>
             <?php endif; ?>
         </div>
         <?php

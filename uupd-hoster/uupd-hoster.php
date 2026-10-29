@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UUPD > Hoster
  * Description: Adds UUPD-compatible license and metadata endpoints on top of native Hoster licensing.
- * Version: 1.0
+ * Version: 1.1
  * Author: Reallyusefulplugins.com
  * Author URI: https://reallyusefulplugins.com
  * Requires PHP: 7.4
@@ -12,6 +12,59 @@
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
+require_once __DIR__ . '/uupd-generator-menu.php';
+
+
+if ( ! function_exists( 'uupd_compat_metadata_key' ) ) {
+    function uupd_compat_metadata_key( $request = null ) {
+        $authorization = $request instanceof WP_REST_Request ? $request->get_header( 'authorization' ) : '';
+        if ( '' === $authorization && isset( $_SERVER['HTTP_AUTHORIZATION'] ) ) { $authorization = wp_unslash( $_SERVER['HTTP_AUTHORIZATION'] ); }
+        if ( preg_match( '/^Bearer\s+(.+)$/i', trim( (string) $authorization ), $matches ) ) { return trim( $matches[1] ); }
+        $query = $request instanceof WP_REST_Request ? $request->get_query_params() : $_GET;
+        if ( ( isset( $query['key'] ) || isset( $query['license_key'] ) ) && ! uupd_allow_query_license_key() ) { return ''; }
+        if ( $request instanceof WP_REST_Request ) { return (string) ( $request->get_param( 'key' ) ?: $request->get_param( 'license_key' ) ); }
+        return isset( $_GET['key'] ) ? (string) wp_unslash( $_GET['key'] ) : ( isset( $_GET['license_key'] ) ? (string) wp_unslash( $_GET['license_key'] ) : '' );
+    }
+}
+
+if ( ! function_exists( 'uupd_allow_query_license_key' ) ) {
+    function uupd_allow_query_license_key() {
+        if ( defined( 'UUPD_ALLOW_QUERY_LICENSE_KEY' ) ) {
+            return (bool) UUPD_ALLOW_QUERY_LICENSE_KEY;
+        }
+        return (bool) apply_filters( 'uupd_allow_query_license_key', '1' === (string) get_option( 'uupd_allow_query_license_key', '1' ) );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_option() {
+        register_setting( 'uupd_compat_transport', 'uupd_allow_query_license_key', [
+            'type' => 'string', 'default' => '1', 'sanitize_callback' => static function ( $value ) { return '1' === (string) $value ? '1' : '0'; },
+        ] );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_settings() {
+        add_options_page( 'UUPD Key Transport', 'UUPD Key Transport', 'manage_options', 'uupd-key-transport', 'uupd_compat_render_transport_settings' );
+    }
+}
+if ( ! function_exists( 'uupd_compat_render_transport_settings' ) ) {
+    function uupd_compat_render_transport_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        ?>
+        <div class="wrap"><h1><?php esc_html_e( 'UUPD Key Transport' ); ?></h1>
+        <p><?php esc_html_e( 'Legacy URL query keys are enabled by default for backwards compatibility. Disable them after clients have moved to Authorization: Bearer.' ); ?></p>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'uupd_compat_transport' ); ?>
+            <input type="hidden" name="uupd_allow_query_license_key" value="0">
+            <label><input type="checkbox" name="uupd_allow_query_license_key" value="1" <?php checked( get_option( 'uupd_allow_query_license_key', '1' ), '1' ); ?>> <?php esc_html_e( 'Accept licence keys from the legacy key query parameter' ); ?></label>
+            <?php submit_button(); ?>
+        </form></div>
+        <?php
+    }
+}
+if ( false === has_action( 'admin_init', 'uupd_compat_register_transport_option' ) ) { add_action( 'admin_init', 'uupd_compat_register_transport_option' ); }
+if ( false === has_action( 'admin_menu', 'uupd_compat_register_transport_settings' ) ) { add_action( 'admin_menu', 'uupd_compat_register_transport_settings' ); }
+
 
 if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
 
@@ -26,11 +79,45 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
             add_action( 'rest_api_init', [ __CLASS__, 'register_routes' ] );
             add_action( 'init', [ __CLASS__, 'maybe_handle_legacy_metadata' ], 0 );
 
-            add_action( 'admin_init', [ __CLASS__, 'maybe_handle_copy' ] );
             add_action( 'admin_menu', [ __CLASS__, 'register_settings_page' ] );
-            add_action( 'admin_enqueue_scripts', [ __CLASS__, 'enqueue_admin_assets' ] );
-            add_filter( 'manage_edit-' . self::get_product_post_type() . '_columns', [ __CLASS__, 'add_product_columns' ], 20 );
-            add_action( 'manage_' . self::get_product_post_type() . '_posts_custom_column', [ __CLASS__, 'render_product_columns' ], 10, 2 );
+        }
+
+        /** Code generation lives here, not in the product-list table. */
+        protected static function render_generator_panel() {
+            $type = self::get_product_post_type();
+            $selected = isset($_GET['uupd_hoster_product']) ? absint(wp_unslash($_GET['uupd_hoster_product'])) : 0;
+            $posts = get_posts(['post_type'=>$type, 'post_status'=>['publish','draft','pending','private'], 'posts_per_page'=>200, 'orderby'=>'title', 'order'=>'ASC']);
+            $product = $selected ? self::resolve_product('', $selected) : [];
+            $valid = $selected && !empty($product['item_id']);
+            ?>
+            <div class="postbox" style="padding:16px 20px;max-width:900px;margin-top:18px">
+                <h2>Generate bootloader and inline licence</h2>
+                <p>Save the vendor and licence-menu settings above, then choose your Hoster product. Both snippets use the saved settings.</p>
+                <form method="get">
+                    <input type="hidden" name="page" value="uupd-settings">
+                    <label for="uupd-hoster-product"><strong>Hoster product</strong></label>
+                    <select name="uupd_hoster_product" id="uupd-hoster-product" required>
+                        <option value="">Select a product</option>
+                        <?php foreach ($posts as $post) : ?>
+                            <option value="<?php echo esc_attr($post->ID); ?>" <?php selected($selected,$post->ID); ?>><?php echo esc_html($post->post_title . ' (#' . $post->ID . ')'); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                    <?php submit_button('Generate code','secondary','submit',false); ?>
+                </form>
+                <?php if ($selected && !$valid) : ?>
+                    <div class="notice notice-error inline"><p>Could not resolve that Hoster product.</p></div>
+                <?php elseif ($valid) :
+                    $snippets = ['Bootloader'=>self::generate_bootloader($product), 'Inline licence box'=>self::generate_inline($product)];
+                    foreach ($snippets as $label=>$code) :
+                        $target='uupd-hoster-'.sanitize_title($label); ?>
+                        <h3><?php echo esc_html($label); ?></h3>
+                        <textarea id="<?php echo esc_attr($target); ?>" class="large-text code" rows="9" readonly><?php echo esc_textarea($code); ?></textarea>
+                        <p><button type="button" class="button uupd-hoster-copy" data-target="<?php echo esc_attr($target); ?>">Copy <?php echo esc_html($label); ?></button></p>
+                    <?php endforeach; ?>
+                    <script>(function(){document.querySelectorAll('.uupd-hoster-copy').forEach(function(b){b.addEventListener('click',function(){var e=document.getElementById(b.dataset.target);if(!e)return;var t=e.value;function done(){b.textContent='Copied!';setTimeout(function(){b.textContent='Copy snippet';},1500);}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(done).catch(function(){window.prompt('Copy snippet:',t);});}else{window.prompt('Copy snippet:',t);}});});})();</script>
+                <?php endif; ?>
+            </div>
+            <?php
         }
 
         protected static function get_product_post_type() {
@@ -74,6 +161,7 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
             ?>
             <div class="wrap">
                 <h1>UUPD Settings</h1>
+                <?php uupd_host_gen_menu_render('hoster'); ?>
                 <form method="post">
                     <?php wp_nonce_field( 'uupd_hoster_save_vendor', 'uupd_hoster_vendor_nonce' ); ?>
                     <table class="form-table" role="presentation">
@@ -87,6 +175,7 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
                     </table>
                     <?php submit_button( 'Save vendor' ); ?>
                 </form>
+                <?php self::render_generator_panel(); ?>
             </div>
             <?php
         }
@@ -133,12 +222,8 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
         }
 
         protected static function read_legacy_license_key() {
-            if ( isset( $_GET['key'] ) ) {
-                return self::sanitize_license_key( wp_unslash( $_GET['key'] ) );
-            }
-
-            if ( isset( $_GET['license_key'] ) ) {
-                return self::sanitize_license_key( wp_unslash( $_GET['license_key'] ) );
+            if ( '' !== uupd_compat_metadata_key() ) {
+                return self::sanitize_license_key( uupd_compat_metadata_key() );
             }
 
             return '';
@@ -228,7 +313,7 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
             }
 
             $slug    = sanitize_key( (string) $request->get_param( 'slug' ) );
-            $key     = self::sanitize_license_key( (string) ( $request->get_param( 'key' ) ?: $request->get_param( 'license_key' ) ) );
+            $key     = self::sanitize_license_key( uupd_compat_metadata_key( $request ) );
             $domain  = sanitize_text_field( (string) $request->get_param( 'domain' ) );
             $item_id = absint( (string) $request->get_param( 'item_id' ) );
             $token   = sanitize_text_field( (string) $request->get_param( 'token' ) );
@@ -303,7 +388,25 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
              * approach is to read that JSON file directly after validating the license.
              * The protected secure-download.php?file=json endpoint is kept as a fallback.
              */
-            $remote = self::read_hoster_metadata_json_file( (int) $product['item_id'] );
+            // Native Hoster 1.4+ generates licence-bound, short-lived package links
+            // via hoster_build_info(). Static info.json is intended for legacy clients
+            // and must not take precedence for authenticated update requests.
+            $remote = [];
+            if ( function_exists( 'hoster_build_info' ) ) {
+                $remote = hoster_build_info( (int) $product['item_id'], [
+                    'license_key' => (string) $license_key,
+                    'site_url'    => (string) $site_url,
+                ] );
+                if ( ! is_array( $remote ) ) {
+                    $remote = [];
+                }
+            }
+
+            // Compatibility with older Hoster releases lacking native helpers.
+            // Never use unbound static package URLs when a native helper exists.
+            if ( empty( $remote ) && ! function_exists( 'hoster_build_info' ) ) {
+                $remote = self::read_hoster_metadata_json_file( (int) $product['item_id'] );
+            }
 
             if ( empty( $remote ) ) {
                 $metadata_token = self::generate_hoster_metadata_token( (int) $product['item_id'] );
@@ -475,13 +578,13 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
         protected static function map_hoster_metadata( array $body, array $product ) {
             $new_version = (string) ( $body['new_version'] ?? $body['version'] ?? $product['current_version'] );
 
-            $download = (string) (
-                $body['download_url']
-                ?? $body['package']
-                ?? $body['download_link']
-                ?? $body['trunk']
-                ?? ''
-            );
+            $download = '';
+            foreach ( [ 'download_url', 'package', 'download_link', 'trunk' ] as $download_field ) {
+                if ( ! empty( $body[ $download_field ] ) && is_string( $body[ $download_field ] ) ) {
+                    $download = esc_url_raw( $body[ $download_field ] );
+                    break;
+                }
+            }
 
             $homepage = (string) ( $body['homepage'] ?? $body['url'] ?? $product['homepage'] );
 
@@ -700,67 +803,6 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
             return untrailingslashit( $value );
         }
 
-        public static function enqueue_admin_assets( $hook ) {
-            $screen = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
-
-            if ( ! $screen || 'edit-' . self::get_product_post_type() !== $screen->id ) {
-                return;
-            }
-
-            wp_add_inline_script( 'jquery-core', "document.addEventListener('click',function(e){var btn=e.target.closest('[data-uupd-copy]');if(!btn){return;}e.preventDefault();var text=btn.getAttribute('data-uupd-copy')||'';if(!text){return;}navigator.clipboard.writeText(text).then(function(){var old=btn.textContent;btn.textContent='Copied';setTimeout(function(){btn.textContent=old;},1200);});});" );
-        }
-
-        public static function add_product_columns( $columns ) {
-            $columns['uupd_bootloader'] = 'UUPD Bootloader';
-            $columns['uupd_inline']     = 'UUPD Inline';
-            return $columns;
-        }
-
-        public static function render_product_columns( $column, $post_id ) {
-            if ( ! in_array( $column, [ 'uupd_bootloader', 'uupd_inline' ], true ) ) {
-                return;
-            }
-
-            $product = self::resolve_product( '', (int) $post_id );
-
-            if ( empty( $product['item_id'] ) ) {
-                echo '<span class="description">Unavailable</span>';
-                return;
-            }
-
-            $vendor = self::get_vendor_slug();
-
-            if ( 'uupd_bootloader' === $column ) {
-                $snippet = self::generate_bootloader( $product );
-                echo '<button type="button" class="button button-small" data-uupd-copy="' . esc_attr( $snippet ) . '">Copy bootloader</button>';
-                echo '<p class="description" style="margin-top:6px;">' . esc_html( $product['slug'] ) . ' · v' . esc_html( $product['current_version'] ) . '<br />Vendor: ' . esc_html( $vendor ) . '</p>';
-            }
-
-            if ( 'uupd_inline' === $column ) {
-                $snippet = self::generate_inline( $product );
-                echo '<button type="button" class="button button-small" data-uupd-copy="' . esc_attr( $snippet ) . '">Copy inline</button>';
-                echo '<p class="description" style="margin-top:6px;">item_id ' . esc_html( (string) $product['item_id'] ) . '<br />Vendor: ' . esc_html( $vendor ) . '</p>';
-            }
-        }
-
-        public static function maybe_handle_copy() {
-            if ( ! is_admin() || ! current_user_can( 'manage_options' ) ) {
-                return;
-            }
-
-            if ( ! isset( $_GET['uupd_hoster_vendor'] ) ) {
-                return;
-            }
-
-            $vendor = sanitize_key( wp_unslash( $_GET['uupd_hoster_vendor'] ) );
-
-            if ( '' === $vendor ) {
-                delete_option( self::OPTION_VENDOR );
-            } else {
-                update_option( self::OPTION_VENDOR, $vendor, false );
-            }
-        }
-
         protected static function generate_bootloader( array $product ) {
             $plugin_name = trim( (string) $product['name'] );
             $server      = trailingslashit( home_url() );
@@ -797,10 +839,9 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
             $code .= "        'license_server' => UUPD_{$const_base}_SERVER_BASE,\n";
             $code .= "        'metadata_base'  => UUPD_{$const_base}_SERVER_BASE,\n";
             $code .= "        'plugin_name'    => UUPD_{$const_base}_FRIENDLY_NAME,\n";
-            $code .= "        'menu_parent'    => 'top_level',\n";
-            $code .= "        'menu_slug'      => UUPD_{$const_base}_MENU_SLUG,\n";
-            $code .= "        'page_title'     => UUPD_{$const_base}_FRIENDLY_NAME . ' License',\n";
-            $code .= "        'menu_title'     => UUPD_{$const_base}_FRIENDLY_NAME . ' License',\n";
+            $menu_lines = uupd_host_gen_menu_lines('hoster', 'UUPD_' . $const_base . '_MENU_SLUG', 'UUPD_' . $const_base . '_FRIENDLY_NAME');
+            if ($menu_lines === null) return '';
+            $code .= $menu_lines;
             $code .= "        'capability'     => 'manage_options',\n";
             $code .= "    ]);\n\n";
             $code .= "    \\UUPD\\V2\\UUPD_Updater_V2::register([\n";
@@ -810,6 +851,7 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
             $code .= "        'name'        => UUPD_{$const_base}_FRIENDLY_NAME,\n";
             $code .= "        'version'     => UUPD_{$const_base}_VERSION,\n";
             $code .= "        'server'      => '',\n";
+		$code .= "        'license_key_transport' => 'header',\n";
             $code .= "    ]);\n";
             $code .= "}, 1 );";
 
@@ -832,7 +874,7 @@ if ( ! class_exists( 'UUPD_Hoster_Compatibility_Layer' ) ) {
 
             $const_base = self::build_vendor_slug_constant_base( $vendor, $product );
 
-            return "<?php \$inst = \\UUPD\\UI\\License\\V1\\UUPD_License_UI::get_instance( UUPD_{$const_base}_VENDOR, UUPD_{$const_base}_SLUG ); if ( \$inst ) { \$inst->render_page(); } ?>";
+            return "<?php \\UUPD\\UI\\License\\V1\\UUPD_License_UI::render_box_for( UUPD_{$const_base}_SLUG, UUPD_{$const_base}_VENDOR ); ?>";
         }
 
         protected static function get_vendor_slug() {

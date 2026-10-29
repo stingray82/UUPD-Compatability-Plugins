@@ -2,7 +2,7 @@
 /**
  * Plugin Name: SmartPay ↔ UUPD
  * Description: Maps WPSmartPay products/variations to UUPD updates/packages and synchronises UUPD licence lifecycle with SmartPay payments and subscriptions.
- * Version: 0.2.0
+ * Version: 0.2.1
  * Author: Reallyusefulplugins.com
  */
 

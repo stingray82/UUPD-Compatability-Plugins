@@ -2,13 +2,50 @@
 /**
  * Plugin Name: Stackless → UUPD Compatibility Bridge
  * Description: UUPD-compatible licensing and metadata endpoints backed by Stackless Software Licensing, plus product bootloader generator.
- * Version: 1.1.0
+ * Version: 1.1.1
  * Requires PHP: 7.4
  * Requires Plugins: woocommerce
  * License: GPL-2.0-or-later
  */
 
 defined('ABSPATH') || exit;
+
+if ( ! function_exists( 'uupd_allow_query_license_key' ) ) {
+    function uupd_allow_query_license_key() {
+        if ( defined( 'UUPD_ALLOW_QUERY_LICENSE_KEY' ) ) { return (bool) UUPD_ALLOW_QUERY_LICENSE_KEY; }
+        return (bool) apply_filters( 'uupd_allow_query_license_key', '1' === (string) get_option( 'uupd_allow_query_license_key', '1' ) );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_option' ) ) {
+    function uupd_compat_register_transport_option() {
+        register_setting( 'uupd_compat_transport', 'uupd_allow_query_license_key', [
+            'type' => 'string', 'default' => '1', 'sanitize_callback' => static function ( $value ) { return '1' === (string) $value ? '1' : '0'; },
+        ] );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_settings() {
+        add_options_page( 'UUPD Key Transport', 'UUPD Key Transport', 'manage_options', 'uupd-key-transport', 'uupd_compat_render_transport_settings' );
+    }
+}
+if ( ! function_exists( 'uupd_compat_render_transport_settings' ) ) {
+    function uupd_compat_render_transport_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        ?>
+        <div class="wrap"><h1><?php esc_html_e( 'UUPD Key Transport' ); ?></h1>
+        <p><?php esc_html_e( 'Legacy URL query keys are enabled by default for backwards compatibility. Disable them after clients use Authorization: Bearer.' ); ?></p>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'uupd_compat_transport' ); ?>
+            <input type="hidden" name="uupd_allow_query_license_key" value="0">
+            <label><input type="checkbox" name="uupd_allow_query_license_key" value="1" <?php checked( get_option( 'uupd_allow_query_license_key', '1' ), '1' ); ?>> <?php esc_html_e( 'Accept licence keys from the legacy metadata key query parameter' ); ?></label>
+            <?php submit_button(); ?>
+        </form></div>
+        <?php
+    }
+}
+if ( false === has_action( 'admin_init', 'uupd_compat_register_transport_option' ) ) { add_action( 'admin_init', 'uupd_compat_register_transport_option' ); }
+if ( false === has_action( 'admin_menu', 'uupd_compat_register_transport_settings' ) ) { add_action( 'admin_menu', 'uupd_compat_register_transport_settings' ); }
+
 
 if (!class_exists('Stackless_UUPD_Bridge')) {
 final class Stackless_UUPD_Bridge {
@@ -42,10 +79,14 @@ final class Stackless_UUPD_Bridge {
     }
 
     private static function license_key(WP_REST_Request $request) {
-        $key = $request->get_header('x-uupd-license-key');
-        if (!$key) { $key = $request->get_param('license_key'); }
-        if (!$key) { $key = $request->get_param('key'); }
-        return is_scalar($key) ? trim((string) $key) : '';
+        $authorization = $request->get_header('authorization');
+        if ( $authorization && preg_match( '/^Bearer\s+(.+)$/i', trim( (string) $authorization ), $matches ) ) { return trim( $matches[1] ); }
+        $key = $request->get_header( 'x-uupd-license-key' );
+        if ( $key ) { return is_scalar( $key ) ? trim( (string) $key ) : ''; }
+        $query = $request->get_query_params();
+        if ( ( isset( $query['key'] ) || isset( $query['license_key'] ) ) && ! uupd_allow_query_license_key() ) { return ''; }
+        $key = $request->get_param( 'license_key' ) ?: $request->get_param( 'key' );
+        return is_scalar( $key ) ? trim( (string) $key ) : '';
     }
 
     private static function params(WP_REST_Request $request) {
@@ -338,6 +379,11 @@ SCRIPT;
         $boot .= "        'metadata_base' => " . $metadata . ",\n";
         $boot .= "        'menu_parent' => " . ($creates_menu ? $q($resolved_parent) : 'false') . ",\n";
         $boot .= "        'menu_slug' => " . $C('MENU_SLUG') . ",\n";
+        if (!$creates_menu && $target_slug !== '') {
+            $return_parent = in_array($menu_parent, ['options-general.php','tools.php','themes.php','plugins.php','users.php','index.php','upload.php','edit.php'], true) ? $menu_parent : 'admin.php';
+            $return_path = $return_parent . '?page=' . $target_slug;
+            $boot .= "        'return_url' => admin_url( " . $q($return_path) . " ),\n";
+        }
         $boot .= "        'page_title' => " . ($page_title !== '' ? $q($page_title) : $C('FRIENDLY_NAME') . " . ' License'") . ",\n";
         $boot .= "        'menu_title' => " . ($menu_title !== '' ? $q($menu_title) : $C('FRIENDLY_NAME') . " . ' License'") . ",\n";
         $boot .= "        'capability' => 'manage_options',\n";
@@ -362,17 +408,18 @@ SCRIPT;
         $boot .= "        'version' => " . $C('VERSION') . ",\n";
         $boot .= "        'mode' => 'json',\n";
         $boot .= "        'server' => " . $metadata . ",\n";
+        $boot .= "        'license_key_transport' => 'header',\n";
         $boot .= $type === 'theme' ? "        'real_slug' => " . $C('SLUG') . ",\n" : "        'plugin_file' => plugin_basename( " . $C('MAIN_FILE') . " ),\n";
         $boot .= "    ] );\n";
         $boot .= "}, 1 );\n\n";
-        // Remove sensitive query key while preserving it for the UUPD request header.
+        // Add request context while preserving either configured key transport.
         $boot .= "add_filter( 'uupd/request_params/" . $license_scope . "', static function ( \$params ) {\n";
-        $boot .= "    unset( \$params['key'] );\n    \$params['domain'] = home_url( '/' );\n    \$params['item_id'] = " . $C('ITEM_NUMBER') . ";\n    return \$params;\n} );\n";
+        $boot .= "    \$params['domain'] = home_url( '/' );\n    \$params['item_id'] = " . $C('ITEM_NUMBER') . ";\n    return \$params;\n} );\n";
         $boot .= "add_filter( 'uupd/request_headers/" . $license_scope . "', static function ( \$headers ) {\n";
         $boot .= "    \$option = get_option( 'uupd_license_' . sanitize_key( " . $C('VENDOR') . " . '__' . str_replace( '-', '_', " . $C('SLUG') . " ) ), [] );\n";
         $boot .= "    \$constant_name = 'UUPD_' . strtoupper( str_replace( '-', '_', " . $C('VENDOR') . " ) ) . '_' . strtoupper( str_replace( '-', '_', " . $C('SLUG') . " ) ) . '_LICENSE_KEY';\n";
         $boot .= "    \$key = defined( \$constant_name ) ? constant( \$constant_name ) : ( \$option['license_key'] ?? '' );\n";
-        $boot .= "    if ( is_string( \$key ) && \$key !== '' && ( \$option['status'] ?? '' ) === 'active' ) { \$headers['X-UUPD-License-Key'] = \$key; }\n";
+        $boot .= "    if ( is_string( \$key ) && \$key !== '' && ( \$option['status'] ?? '' ) === 'active' ) { \$headers['Authorization'] = 'Bearer ' . \$key; }\n";
         $boot .= "    return \$headers;\n} );\n";
         $inline = "\\UUPD\\UI\\License\\V1\\UUPD_License_UI::render_box_for( " . $C('SLUG') . ", " . $C('VENDOR') . " );\n";
         return ['constants'=>$const, 'bootloader'=>$boot, 'inline'=>$inline];

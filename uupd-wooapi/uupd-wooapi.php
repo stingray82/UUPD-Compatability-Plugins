@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: UUPD > Woo API
- * Version: 0.6.3
+ * Version: 0.6.4
  * Author:
  * Requires PHP: 7.4
  */
@@ -9,6 +9,59 @@
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
+require_once __DIR__ . '/uupd-generator-menu.php';
+
+
+if ( ! function_exists( 'uupd_compat_metadata_key' ) ) {
+    function uupd_compat_metadata_key( $request = null ) {
+        $authorization = $request instanceof WP_REST_Request ? $request->get_header( 'authorization' ) : '';
+        if ( '' === $authorization && isset( $_SERVER['HTTP_AUTHORIZATION'] ) ) { $authorization = wp_unslash( $_SERVER['HTTP_AUTHORIZATION'] ); }
+        if ( preg_match( '/^Bearer\s+(.+)$/i', trim( (string) $authorization ), $matches ) ) { return trim( $matches[1] ); }
+        $query = $request instanceof WP_REST_Request ? $request->get_query_params() : $_GET;
+        if ( ( isset( $query['key'] ) || isset( $query['license_key'] ) ) && ! uupd_allow_query_license_key() ) { return ''; }
+        if ( $request instanceof WP_REST_Request ) { return (string) ( $request->get_param( 'key' ) ?: $request->get_param( 'license_key' ) ); }
+        return isset( $_GET['key'] ) ? (string) wp_unslash( $_GET['key'] ) : ( isset( $_GET['license_key'] ) ? (string) wp_unslash( $_GET['license_key'] ) : '' );
+    }
+}
+
+if ( ! function_exists( 'uupd_allow_query_license_key' ) ) {
+    function uupd_allow_query_license_key() {
+        if ( defined( 'UUPD_ALLOW_QUERY_LICENSE_KEY' ) ) {
+            return (bool) UUPD_ALLOW_QUERY_LICENSE_KEY;
+        }
+        return (bool) apply_filters( 'uupd_allow_query_license_key', '1' === (string) get_option( 'uupd_allow_query_license_key', '1' ) );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_option() {
+        register_setting( 'uupd_compat_transport', 'uupd_allow_query_license_key', [
+            'type' => 'string', 'default' => '1', 'sanitize_callback' => static function ( $value ) { return '1' === (string) $value ? '1' : '0'; },
+        ] );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_settings() {
+        add_options_page( 'UUPD Key Transport', 'UUPD Key Transport', 'manage_options', 'uupd-key-transport', 'uupd_compat_render_transport_settings' );
+    }
+}
+if ( ! function_exists( 'uupd_compat_render_transport_settings' ) ) {
+    function uupd_compat_render_transport_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        ?>
+        <div class="wrap"><h1><?php esc_html_e( 'UUPD Key Transport' ); ?></h1>
+        <p><?php esc_html_e( 'Legacy URL query keys are enabled by default for backwards compatibility. Disable them after clients have moved to Authorization: Bearer.' ); ?></p>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'uupd_compat_transport' ); ?>
+            <input type="hidden" name="uupd_allow_query_license_key" value="0">
+            <label><input type="checkbox" name="uupd_allow_query_license_key" value="1" <?php checked( get_option( 'uupd_allow_query_license_key', '1' ), '1' ); ?>> <?php esc_html_e( 'Accept licence keys from the legacy key query parameter' ); ?></label>
+            <?php submit_button(); ?>
+        </form></div>
+        <?php
+    }
+}
+if ( false === has_action( 'admin_init', 'uupd_compat_register_transport_option' ) ) { add_action( 'admin_init', 'uupd_compat_register_transport_option' ); }
+if ( false === has_action( 'admin_menu', 'uupd_compat_register_transport_settings' ) ) { add_action( 'admin_menu', 'uupd_compat_register_transport_settings' ); }
+
 
 if ( ! class_exists( 'UUPD_WC_AM_Compat_Layer' ) ) {
 	final class UUPD_WC_AM_Compat_Layer {
@@ -46,8 +99,8 @@ if ( ! class_exists( 'UUPD_WC_AM_Compat_Layer' ) ) {
 			add_action( 'admin_footer-post.php', [ __CLASS__, 'render_product_media_template' ] );
 			add_action( 'admin_footer-post-new.php', [ __CLASS__, 'render_product_media_template' ] );
 			add_action( 'save_post_product', [ __CLASS__, 'save_product_media_meta' ] );
-			add_filter( 'manage_edit-product_columns', [ __CLASS__, 'product_columns' ] );
-			add_action( 'manage_product_posts_custom_column', [ __CLASS__, 'render_product_column' ], 10, 2 );
+			// Code generation is available under Settings > UUPD Settings.
+
 		}
 
 		public static function register_routes() {
@@ -78,7 +131,7 @@ if ( ! class_exists( 'UUPD_WC_AM_Compat_Layer' ) ) {
 			}
 
 			$slug    = isset( $_GET['slug'] ) ? sanitize_key( wp_unslash( $_GET['slug'] ) ) : '';
-			$key     = isset( $_GET['key'] ) ? self::sanitize_license_key( wp_unslash( $_GET['key'] ) ) : '';
+			$key     = uupd_compat_metadata_key();
 			$domain  = isset( $_GET['domain'] ) ? sanitize_text_field( wp_unslash( $_GET['domain'] ) ) : '';
 			$item_id = isset( $_GET['item_id'] ) ? sanitize_text_field( wp_unslash( $_GET['item_id'] ) ) : '';
 			$version = isset( $_GET['version'] ) ? sanitize_text_field( wp_unslash( $_GET['version'] ) ) : '';
@@ -236,7 +289,7 @@ if ( ! class_exists( 'UUPD_WC_AM_Compat_Layer' ) ) {
 
 		public static function handle_metadata_request( WP_REST_Request $request ) {
 			$slug    = sanitize_key( (string) $request->get_param( 'slug' ) );
-			$key     = self::sanitize_license_key( (string) $request->get_param( 'key' ) );
+			$key     = self::sanitize_license_key( uupd_compat_metadata_key( $request ) );
 			$domain  = sanitize_text_field( (string) $request->get_param( 'domain' ) );
 			$item_id = (string) $request->get_param( 'item_id' );
 			$version = (string) $request->get_param( 'version' );
@@ -936,6 +989,7 @@ if ( ! class_exists( 'UUPD_WC_AM_Compat_Layer' ) ) {
 			?>
 			<div class="wrap">
 				<h1>UUPD Settings</h1>
+                <?php uupd_woo_gen_menu_render('wooapi'); ?>
 				<form method="post">
 					<?php wp_nonce_field( 'uupd_wc_am_save_vendor', 'uupd_wc_am_vendor_nonce' ); ?>
 					<table class="form-table" role="presentation">
@@ -960,11 +1014,45 @@ if ( ! class_exists( 'UUPD_WC_AM_Compat_Layer' ) ) {
 					</table>
 					<?php submit_button( 'Save vendor' ); ?>
 				</form>
-			</div>
-			<?php
-		}
+			    <?php
+                $products = get_posts(['post_type'=>'product','post_status'=>['publish','draft','private'],'posts_per_page'=>200,'orderby'=>'title','order'=>'ASC']);
+                $selected = isset($_GET['uupd_product']) ? absint($_GET['uupd_product']) : 0;
+                if (!$selected && $products) $selected = (int)$products[0]->ID;
+                $ids = array_map('intval',wp_list_pluck($products,'ID'));
+                if (!in_array($selected,$ids,true)) $selected = 0;
+                $boot = $selected ? self::generated_code($selected,'bootloader') : '';
+                $inline = $selected ? self::generated_code($selected,'inline') : '';
+                $valid = $selected && $boot !== '' && strpos($boot,'UUPD_License_UI::register') !== false;
+                ?>
+                <div class="postbox" style="padding:18px;max-width:1000px">
+                    <h2>Generate WooAPI bootloader</h2>
+                    <p>Select a WooCommerce product and copy its bootloader or compact inline licence snippet.</p>
+                    <form method="get">
+                        <input type="hidden" name="page" value="uupd-settings">
+                        <select name="uupd_product">
+                            <?php foreach ($products as $product): ?>
+                                <option value="<?php echo (int)$product->ID; ?>" <?php selected($selected,(int)$product->ID); ?>><?php echo esc_html($product->post_title . ' (#' . $product->ID . ')'); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                        <button class="button">Generate code</button>
+                    </form>
+                    <?php if($valid): ?>
+                        <h3>Bootloader</h3>
+                        <button type="button" class="button uupd-settings-copy" data-target="uupd-woo-boot">Copy bootloader</button>
+                        <textarea readonly id="uupd-woo-boot" rows="12" style="width:100%;font-family:monospace;margin:8px 0 18px"><?php echo esc_textarea($boot); ?></textarea>
+                        <h3>Inline licence box</h3>
+                        <button type="button" class="button uupd-settings-copy" data-target="uupd-woo-inline">Copy inline</button>
+                        <textarea readonly id="uupd-woo-inline" rows="3" style="width:100%;font-family:monospace;margin:8px 0"><?php echo esc_textarea($inline); ?></textarea>
+                    <?php else: ?>
+                        <p class="description">Choose a product and save a valid licence menu configuration to generate code.</p>
+                    <?php endif; ?>
+                </div>
+                <script>document.querySelectorAll('.uupd-settings-copy').forEach(function(b){b.addEventListener('click',function(){var t=document.getElementById(b.dataset.target);if(!t)return;t.select();if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t.value).catch(function(){document.execCommand('copy');});}else{document.execCommand('copy');}});});</script>
+            </div>
+            <?php
+        }
 
-		protected static function get_vendor_slug_raw() : string {
+        protected static function get_vendor_slug_raw() : string {
 			$value = get_option( self::OPTION_VENDOR, '' );
 			return is_string( $value ) ? sanitize_key( $value ) : '';
 		}
@@ -1266,8 +1354,7 @@ JS;
 			$const_base = self::build_vendor_slug_constant_base( $vendor, $slug, $post_id );
 
 			if ( 'uupd_inline' === $column ) {
-				$code = "<?php \$inst = \\UUPD\\UI\\License\\V1\\UUPD_License_UI::get_instance( " . $const_base . "_VENDOR, " . $const_base . "_SLUG ); if ( \$inst ) { \$inst->render_page(); } ?>";
-
+                $code = "<?php \\UUPD\\UI\\License\\V1\\UUPD_License_UI::render_box_for( " . $const_base . "_SLUG, " . $const_base . "_VENDOR ); ?>";
 				echo '<div class="uupd-copy-stack"><button type="button" class="button" data-uupd-label="Copy inline" data-uupd-copy="' . esc_attr( $code ) . '">Copy inline</button></div>';
 				return;
 			}
@@ -1290,10 +1377,8 @@ JS;
 				. "        'license_server' => " . $const_base . "_SERVER_BASE,\n"
 				. "        'metadata_base'  => " . $const_base . "_SERVER_BASE,\n"
 				. "        'plugin_name'    => " . $const_base . "_FRIENDLY_NAME,\n"
-				. "        'menu_parent'    => 'top_level',\n"
-				. "        'menu_slug'      => " . $const_base . "_MENU_SLUG,\n"
-				. "        'page_title'     => " . $const_base . "_FRIENDLY_NAME . ' License',\n"
-				. "        'menu_title'     => " . $const_base . "_FRIENDLY_NAME . ' License',\n"
+				. uupd_woo_gen_menu_lines('wooapi', $const_base . '_MENU_SLUG')
+				. self::generated_title_lines($const_base)
 				. "        'capability'     => 'manage_options',\n"
 				. "    ]);\n\n"
 				. "    \\UUPD\\V2\\UUPD_Updater_V2::register([\n"
@@ -1303,11 +1388,33 @@ JS;
 				. "        'name'        => " . $const_base . "_FRIENDLY_NAME,\n"
 				. "        'version'     => " . $const_base . "_VERSION,\n"
 				. "        'server'      => '',\n"
+		. "        'license_key_transport' => 'header',\n"
 				. "    ]);\n"
 				. "}, 1 );";
 
 			echo '<div class="uupd-copy-stack"><button type="button" class="button" data-uupd-label="Copy bootloader" data-uupd-copy="' . esc_attr( $code ) . '">Copy bootloader</button></div>';
 		}
+
+        protected static function generated_title_lines(string $const_base): string {
+            $settings = uupd_woo_gen_menu_settings('wooapi');
+            if ($settings['placement'] === 'embedded') return '';
+            $default = $const_base . "_FRIENDLY_NAME . ' License'";
+            $page = trim((string)$settings['page_title']);
+            $menu = trim((string)$settings['menu_title']);
+            return "        'page_title'     => " . ($page !== '' ? var_export($page,true) : $default) . ",\n"
+                . "        'menu_title'     => " . ($menu !== '' ? var_export($menu,true) : $default) . ",\n";
+        }
+
+        /** Reuse the same generation logic used by the legacy product-list buttons. */
+        public static function generated_code(int $product_id, string $kind): string {
+            ob_start();
+            self::render_product_column($kind === 'inline' ? 'uupd_inline' : 'uupd_bootloader', $product_id);
+            $html = ob_get_clean();
+            if (preg_match('/data-uupd-copy="([^"]*)"/', $html, $matches)) {
+                return html_entity_decode($matches[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+            }
+            return '';
+        }
 
 		protected static function build_constant_base( string $slug, int $post_id ) : string {
 			$base = strtoupper( preg_replace( '/[^A-Z0-9]+/', '_', sanitize_key( $slug ) ) );

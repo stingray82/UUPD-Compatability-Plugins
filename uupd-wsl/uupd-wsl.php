@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UUPD > WSL
  * Description: Adds UUPD-compatible license and metadata endpoints on top of WP Software License
- * Version: 1.0
+ * Version: 1.1
  * Author:  Reallyusefulplugins.com
  * Author URI: https://reallyusefulplugins.com
  * Requires PHP: 7.4
@@ -12,6 +12,59 @@
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
+require_once __DIR__ . '/uupd-generator-menu.php';
+
+
+if ( ! function_exists( 'uupd_compat_metadata_key' ) ) {
+    function uupd_compat_metadata_key( $request = null ) {
+        $authorization = $request instanceof WP_REST_Request ? $request->get_header( 'authorization' ) : '';
+        if ( '' === $authorization && isset( $_SERVER['HTTP_AUTHORIZATION'] ) ) { $authorization = wp_unslash( $_SERVER['HTTP_AUTHORIZATION'] ); }
+        if ( preg_match( '/^Bearer\s+(.+)$/i', trim( (string) $authorization ), $matches ) ) { return trim( $matches[1] ); }
+        $query = $request instanceof WP_REST_Request ? $request->get_query_params() : $_GET;
+        if ( ( isset( $query['key'] ) || isset( $query['license_key'] ) ) && ! uupd_allow_query_license_key() ) { return ''; }
+        if ( $request instanceof WP_REST_Request ) { return (string) ( $request->get_param( 'key' ) ?: $request->get_param( 'license_key' ) ); }
+        return isset( $_GET['key'] ) ? (string) wp_unslash( $_GET['key'] ) : ( isset( $_GET['license_key'] ) ? (string) wp_unslash( $_GET['license_key'] ) : '' );
+    }
+}
+
+if ( ! function_exists( 'uupd_allow_query_license_key' ) ) {
+    function uupd_allow_query_license_key() {
+        if ( defined( 'UUPD_ALLOW_QUERY_LICENSE_KEY' ) ) {
+            return (bool) UUPD_ALLOW_QUERY_LICENSE_KEY;
+        }
+        return (bool) apply_filters( 'uupd_allow_query_license_key', '1' === (string) get_option( 'uupd_allow_query_license_key', '1' ) );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_option() {
+        register_setting( 'uupd_compat_transport', 'uupd_allow_query_license_key', [
+            'type' => 'string', 'default' => '1', 'sanitize_callback' => static function ( $value ) { return '1' === (string) $value ? '1' : '0'; },
+        ] );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_settings() {
+        add_options_page( 'UUPD Key Transport', 'UUPD Key Transport', 'manage_options', 'uupd-key-transport', 'uupd_compat_render_transport_settings' );
+    }
+}
+if ( ! function_exists( 'uupd_compat_render_transport_settings' ) ) {
+    function uupd_compat_render_transport_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        ?>
+        <div class="wrap"><h1><?php esc_html_e( 'UUPD Key Transport' ); ?></h1>
+        <p><?php esc_html_e( 'Legacy URL query keys are enabled by default for backwards compatibility. Disable them after clients have moved to Authorization: Bearer.' ); ?></p>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'uupd_compat_transport' ); ?>
+            <input type="hidden" name="uupd_allow_query_license_key" value="0">
+            <label><input type="checkbox" name="uupd_allow_query_license_key" value="1" <?php checked( get_option( 'uupd_allow_query_license_key', '1' ), '1' ); ?>> <?php esc_html_e( 'Accept licence keys from the legacy key query parameter' ); ?></label>
+            <?php submit_button(); ?>
+        </form></div>
+        <?php
+    }
+}
+if ( false === has_action( 'admin_init', 'uupd_compat_register_transport_option' ) ) { add_action( 'admin_init', 'uupd_compat_register_transport_option' ); }
+if ( false === has_action( 'admin_menu', 'uupd_compat_register_transport_settings' ) ) { add_action( 'admin_menu', 'uupd_compat_register_transport_settings' ); }
+
 
 if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
     final class UUPD_WSL_Compatibility_Layer {
@@ -25,12 +78,7 @@ if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
             add_action( 'init', [ __CLASS__, 'maybe_handle_legacy_metadata' ], 0 );
 
             if ( is_admin() ) {
-                add_action( 'admin_init', [ __CLASS__, 'maybe_handle_copy' ] );
                 add_action( 'admin_menu', [ __CLASS__, 'register_settings_page' ] );
-                add_action( 'admin_enqueue_scripts', [ __CLASS__, 'enqueue_admin_assets' ] );
-                add_action( 'admin_head-edit.php', [ __CLASS__, 'output_admin_column_styles' ] );
-                add_filter( 'manage_edit-' . self::get_product_post_type() . '_columns', [ __CLASS__, 'add_product_columns' ], 30 );
-                add_action( 'manage_' . self::get_product_post_type() . '_posts_custom_column', [ __CLASS__, 'render_product_columns' ], 10, 2 );
             }
         }
 
@@ -80,7 +128,7 @@ if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
             }
 
             $slug    = isset( $_GET['slug'] ) ? sanitize_key( wp_unslash( $_GET['slug'] ) ) : '';
-            $key     = isset( $_GET['key'] ) ? self::sanitize_license_key( wp_unslash( $_GET['key'] ) ) : '';
+            $key     = uupd_compat_metadata_key();
             $domain  = isset( $_GET['domain'] ) ? sanitize_text_field( wp_unslash( $_GET['domain'] ) ) : '';
             $item_id = isset( $_GET['item_id'] ) ? sanitize_text_field( wp_unslash( $_GET['item_id'] ) ) : '';
             $version = isset( $_GET['version'] ) ? sanitize_text_field( wp_unslash( $_GET['version'] ) ) : '';
@@ -166,7 +214,7 @@ if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
             }
 
             $slug    = sanitize_key( (string) $request->get_param( 'slug' ) );
-            $key     = self::sanitize_license_key( (string) $request->get_param( 'key' ) );
+            $key     = self::sanitize_license_key( uupd_compat_metadata_key( $request ) );
             $domain  = sanitize_text_field( (string) $request->get_param( 'domain' ) );
             $item_id = (string) $request->get_param( 'item_id' );
             $version = (string) $request->get_param( 'version' );
@@ -276,7 +324,7 @@ if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
             $base_query = [
                 'product_unique_id' => (string) $product['product_unique_id'],
                 'domain'            => self::normalize_domain_host( $domain ),
-                'version'           => (string) ( $installed_version !== '' ? $installed_version : '0.0.0' ),
+                'version'           => '0.0.0', // Force WSL's native API to return package metadata; UUPD compares real installed versions itself.
                 'wp-version'        => (string) $wp_version,
                 'api_version'       => (string) apply_filters( 'uupd_wsl_compat/api_version', '1.2' ),
             ];
@@ -750,66 +798,6 @@ if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
             return is_scalar( $value ) ? (string) $value : '';
         }
 
-        public static function enqueue_admin_assets( $hook ) {
-            if ( 'edit.php' !== $hook ) {
-                return;
-            }
-            $screen = get_current_screen();
-            if ( ! $screen || $screen->post_type !== self::get_product_post_type() ) {
-                return;
-            }
-            wp_add_inline_script( 'jquery-core', "document.addEventListener('click',async function(e){var b=e.target.closest('.uupd-copy-btn');if(!b)return;var t=b.getAttribute('data-copy')||'';if(!t)return;try{await navigator.clipboard.writeText(t);var o=b.textContent;b.textContent='Copied';setTimeout(function(){b.textContent=o;},1200);}catch(err){window.prompt('Copy to clipboard:',t);}});" );
-        }
-
-        public static function output_admin_column_styles() {
-            $screen = get_current_screen();
-            if ( ! $screen || $screen->post_type !== self::get_product_post_type() ) {
-                return;
-            }
-            echo '<style>'
-                . '.column-uupd_bootloader,.column-uupd_inline{width:170px;white-space:nowrap;}'
-                . '.uupd-copy-btn{white-space:nowrap;}'
-                . '</style>';
-        }
-
-        public static function add_product_columns( $columns ) {
-            $new = [];
-            foreach ( $columns as $key => $label ) {
-                $new[ $key ] = $label;
-                if ( 'name' === $key ) {
-                    $new['uupd_bootloader'] = 'UUPD Bootloader';
-                    $new['uupd_inline']     = 'UUPD Inline';
-                }
-            }
-            if ( ! isset( $new['uupd_bootloader'] ) ) {
-                $new['uupd_bootloader'] = 'UUPD Bootloader';
-                $new['uupd_inline']     = 'UUPD Inline';
-            }
-            return $new;
-        }
-
-        public static function render_product_columns( $column, $post_id ) {
-            if ( ! in_array( $column, [ 'uupd_bootloader', 'uupd_inline' ], true ) ) {
-                return;
-            }
-            $product = self::resolve_product( '', (string) $post_id );
-            if ( empty( $product['slug'] ) ) {
-                echo '&mdash;';
-                return;
-            }
-            if ( 'uupd_bootloader' === $column ) {
-                $copy = self::build_bootloader_snippet( $product );
-                echo '<button type="button" class="button button-small uupd-copy-btn" data-copy="' . esc_attr( $copy ) . '">Copy bootloader</button>';
-                return;
-            }
-            $copy = self::build_inline_snippet( $product );
-            echo '<button type="button" class="button button-small uupd-copy-btn" data-copy="' . esc_attr( $copy ) . '">Copy inline</button>';
-        }
-
-        public static function maybe_handle_copy() {
-            // reserved for future dedicated generator UI if needed
-        }
-
         public static function register_settings_page() {
             add_options_page(
                 'UUPD WSL Settings',
@@ -844,6 +832,7 @@ if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
             ?>
             <div class="wrap">
                 <h1>UUPD WSL Settings</h1>
+                <?php uupd_wsl_gen_menu_render('wsl'); ?>
                 <form method="post">
                     <?php wp_nonce_field( 'uupd_wsl_save_vendor', 'uupd_wsl_vendor_nonce' ); ?>
                     <table class="form-table" role="presentation">
@@ -857,6 +846,56 @@ if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
                     </table>
                     <?php submit_button( 'Save vendor' ); ?>
                 </form>
+                <?php self::render_generator_panel(); ?>
+            </div>
+            <?php
+        }
+
+        /** Select a WSL product and generate snippets using the same builders as the former table buttons. */
+        protected static function render_generator_panel() {
+            $post_type = self::get_product_post_type();
+            $selected  = isset( $_GET['uupd_wsl_product'] ) ? absint( wp_unslash( $_GET['uupd_wsl_product'] ) ) : 0;
+            $products  = get_posts( [
+                'post_type'      => $post_type,
+                'post_status'    => [ 'publish', 'draft', 'private', 'future' ],
+                'posts_per_page' => 200,
+                'orderby'        => 'title',
+                'order'          => 'ASC',
+            ] );
+            $product = $selected ? self::resolve_product( '', (string) $selected ) : [];
+            $valid = $selected && ! empty( $product['slug'] ) && (int) ( $product['item_id'] ?? 0 ) === $selected;
+            ?>
+            <div class="postbox" style="padding:16px 20px;max-width:900px;margin-top:18px">
+                <h2>Generate bootloader and inline licence</h2>
+                <p>Select the WSL product whose updater code you want to generate. Save the licence menu settings and vendor first; generation uses the currently saved values.</p>
+                <form method="get">
+                    <input type="hidden" name="page" value="uupd-wsl-settings">
+                    <label for="uupd-wsl-product"><strong>WSL product</strong></label>
+                    <select name="uupd_wsl_product" id="uupd-wsl-product" required>
+                        <option value="">Select a product</option>
+                        <?php foreach ( $products as $item ) : ?>
+                            <option value="<?php echo esc_attr( $item->ID ); ?>" <?php selected( $selected, $item->ID ); ?>>
+                                <?php echo esc_html( $item->post_title . ' (#' . $item->ID . ')' ); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <?php submit_button( 'Generate code', 'secondary', 'submit', false ); ?>
+                </form>
+                <?php if ( $selected && ! $valid ) : ?>
+                    <div class="notice notice-error inline"><p>That WSL product could not be resolved. Select an available product.</p></div>
+                <?php elseif ( $valid ) :
+                    $bootloader = self::build_bootloader_snippet( $product );
+                    $inline = self::build_inline_snippet( $product );
+                    foreach ( [ 'Bootloader' => $bootloader, 'Inline licence box' => $inline ] as $label => $snippet ) : ?>
+                        <h3><?php echo esc_html( $label ); ?></h3>
+                        <textarea id="<?php echo esc_attr( 'uupd-wsl-' . sanitize_title( $label ) ); ?>" readonly rows="8" class="large-text code" style="max-width:100%" aria-label="<?php echo esc_attr( $label ); ?>"><?php echo esc_textarea( $snippet ); ?></textarea>
+                        <p><button type="button" class="button uupd-wsl-copy" data-copy-target="<?php echo esc_attr( 'uupd-wsl-' . sanitize_title( $label ) ); ?>">Copy <?php echo esc_html( $label ); ?></button></p>
+
+                    <?php endforeach; ?>
+                    <script>
+                    (function(){document.querySelectorAll('.uupd-wsl-copy').forEach(function(button){button.addEventListener('click',function(){var el=document.getElementById(button.dataset.copyTarget);if(!el)return;var value=el.value;var copied=function(){button.textContent='Copied!';setTimeout(function(){button.textContent='Copy snippet';},1400);};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(value).then(copied).catch(function(){window.prompt('Copy code:',value);});}else{window.prompt('Copy code:',value);}});});})();
+                    </script>
+                <?php endif; ?>
             </div>
             <?php
         }
@@ -945,14 +984,7 @@ if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
 		"
 		        . "        'plugin_name'    => {$const}_FRIENDLY_NAME,
 		"
-		        . "        'menu_parent'    => 'top_level',
-		"
-		        . "        'menu_slug'      => {$const}_MENU_SLUG,
-		"
-		        . "        'page_title'     => {$const}_FRIENDLY_NAME . ' License',
-		"
-		        . "        'menu_title'     => '" . addslashes( $menu_title ) . "',
-		"
+		        . uupd_wsl_gen_menu_lines('wsl', $const . '_MENU_SLUG', $const . '_FRIENDLY_NAME')
 		        . "        'capability'     => 'manage_options',
 		"
 		        . "    ]);
@@ -972,6 +1004,8 @@ if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
 		"
 		        . "        'server'      => '',
 		"
+		        . "        'license_key_transport' => 'header',
+		"
 		        . "    ]);
 		"
 		        . "}, 1 );";
@@ -981,7 +1015,7 @@ if ( ! class_exists( 'UUPD_WSL_Compatibility_Layer' ) ) {
 		    $vendor = self::get_vendor_slug( $product );
 		    $const  = self::build_vendor_slug_constant_stem( $vendor, $product['slug'] );
 
-		    return "<?php \$inst = \\UUPD\\UI\\License\\V1\\UUPD_License_UI::get_instance( {$const}_VENDOR, {$const}_SLUG ); if ( \$inst ) { \$inst->render_page(); } ?>";
+		    return "<?php \\UUPD\\UI\\License\\V1\\UUPD_License_UI::render_box_for( {$const}_SLUG, {$const}_VENDOR ); ?>";
 		}
     }
 

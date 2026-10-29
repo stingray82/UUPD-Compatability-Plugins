@@ -105,6 +105,7 @@ Generated bootloader should use:
     'name'        => UUPD_..._FRIENDLY_NAME,
     'version'     => UUPD_..._VERSION,
     'server'      => '',
+    'license_key_transport' => 'header', // UUPD 2.2: use Authorization: Bearer for metadata.
 ]);
 ```
 

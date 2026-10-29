@@ -2,11 +2,51 @@
 /**
  * Plugin Name: Stackless EDD → UUPD Bridge
  * Description: UUPD compatibility, per-download loader generation and authenticated release deployment for Stackless EDD.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Requires PHP: 7.4
  * License: GPL-2.0-or-later
  */
 defined('ABSPATH') || exit;
+
+if ( ! function_exists( 'uupd_allow_query_license_key' ) ) {
+    function uupd_allow_query_license_key() {
+        if ( defined( 'UUPD_ALLOW_QUERY_LICENSE_KEY' ) ) {
+            return (bool) UUPD_ALLOW_QUERY_LICENSE_KEY;
+        }
+        return (bool) apply_filters( 'uupd_allow_query_license_key', '1' === (string) get_option( 'uupd_allow_query_license_key', '1' ) );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_option' ) ) {
+    function uupd_compat_register_transport_option() {
+        register_setting( 'uupd_compat_transport', 'uupd_allow_query_license_key', [
+            'type' => 'string', 'default' => '1', 'sanitize_callback' => static function ( $value ) { return '1' === (string) $value ? '1' : '0'; },
+        ] );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_settings() {
+        add_options_page( 'UUPD Key Transport', 'UUPD Key Transport', 'manage_options', 'uupd-key-transport', 'uupd_compat_render_transport_settings' );
+    }
+}
+if ( ! function_exists( 'uupd_compat_render_transport_settings' ) ) {
+    function uupd_compat_render_transport_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        ?>
+        <div class="wrap"><h1><?php esc_html_e( 'UUPD Key Transport' ); ?></h1>
+        <p><?php esc_html_e( 'Legacy URL query keys are enabled by default for backwards compatibility. Disable them after clients have moved to Authorization: Bearer.' ); ?></p>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'uupd_compat_transport' ); ?>
+            <input type="hidden" name="uupd_allow_query_license_key" value="0">
+            <label><input type="checkbox" name="uupd_allow_query_license_key" value="1" <?php checked( get_option( 'uupd_allow_query_license_key', '1' ), '1' ); ?>> <?php esc_html_e( 'Accept licence keys from the legacy key query parameter' ); ?></label>
+            <?php submit_button(); ?>
+        </form></div>
+        <?php
+    }
+}
+if ( false === has_action( 'admin_init', 'uupd_compat_register_transport_option' ) ) { add_action( 'admin_init', 'uupd_compat_register_transport_option' ); }
+if ( false === has_action( 'admin_menu', 'uupd_compat_register_transport_settings' ) ) { add_action( 'admin_menu', 'uupd_compat_register_transport_settings' ); }
+
+
 final class Stackless_EDD_UUPD_Bridge {
     const META_PREFIX = '_stackless_edd_uupd_';
     public static function boot() {
@@ -30,7 +70,12 @@ final class Stackless_EDD_UUPD_Bridge {
     private static function params($r) {
         $site = (string)($r->get_param('domain') ?: $r->get_param('site_url') ?: '');
         if ($site && !preg_match('~^https?://~i',$site)) $site='https://'.$site;
-        $key=$r->get_header('x-uupd-license-key') ?: $r->get_param('license_key') ?: $r->get_param('key');
+        $authorization = $r->get_header( 'authorization' );
+        $key = $authorization && preg_match( '/^Bearer\s+(.+)$/i', trim( (string) $authorization ), $matches ) ? trim( $matches[1] ) : '';
+        $key = $key ?: $r->get_header( 'x-uupd-license-key' );
+        $query = $r->get_query_params();
+        $query_key_disabled = ( isset( $query['key'] ) || isset( $query['license_key'] ) ) && ! uupd_allow_query_license_key();
+        if ( ! $key && ! $query_key_disabled ) { $key = $r->get_param( 'license_key' ) ?: $r->get_param( 'key' ); }
         $id=absint($r->get_param('download_id') ?: $r->get_param('item_id') ?: $r->get_param('product_id'));
         $p=['license_key'=>is_scalar($key)?trim((string)$key):'', 'slug'=>sanitize_text_field((string)$r->get_param('slug')), 'site_url'=>esc_url_raw($site)];
         if ($id) $p['download_id']=$id;
@@ -134,7 +179,7 @@ final class Stackless_EDD_UUPD_Bridge {
         add_meta_box('stackless-edd-uupd','UUPD Loader & Release Artwork',[__CLASS__,'panel'],'download','normal','default');
     }
     public static function metabox() { self::fallback_metabox(); }
-    private static function fields() {return ['vendor','software_slug','type','mode','menu_placement','menu_parent','menu_slug','menu_title','page_title','updater_path','ui_path','icon_1x','icon_2x','banner_low','banner_high'];}
+    private static function fields() {return ['vendor','software_slug','type','mode','menu_placement','menu_parent','menu_slug','return_path','menu_title','page_title','updater_path','ui_path','icon_1x','icon_2x','banner_low','banner_high'];}
     private static function parent_options() {
         return [
             'options-general.php'=>'Settings', 'tools.php'=>'Tools', 'plugins.php'=>'Plugins',
@@ -153,7 +198,7 @@ final class Stackless_EDD_UUPD_Bridge {
         $name = $post && $post->post_title ? $post->post_title : 'My Software';
         $slug = $post ? sanitize_title($post->post_title) : 'my-software';
         return ['vendor'=>'myvendor','type'=>'plugin','mode'=>'both','menu_placement'=>'submenu',
-            'menu_parent'=>'options-general.php','menu_slug'=>$slug.'-license',
+            'menu_parent'=>'options-general.php','menu_slug'=>$slug.'-license','return_path'=>'',
             'menu_title'=>$name.' License','page_title'=>$name.' License Settings',
             'updater_path'=>'inc/updater.php','ui_path'=>'inc/class-uupd-license-ui.php',
             'software_slug'=>self::resolved_slug($post ? $post->ID : 0)];
@@ -162,7 +207,7 @@ final class Stackless_EDD_UUPD_Bridge {
         if (!current_user_can('edit_post',$post->ID)) return;
         wp_nonce_field('stackless_edd_uupd_save','stackless_edd_uupd_nonce');
         $defaults=self::default_values($post);
-        $labels=['vendor'=>'Vendor / namespace','software_slug'=>'UUPD software slug (must match EDD licensing)','type'=>'Software type','mode'=>'Licence UI display','menu_placement'=>'Licence page placement','menu_parent'=>'Parent admin menu','menu_slug'=>'Settings page slug','menu_title'=>'Admin menu title','page_title'=>'Page heading','updater_path'=>'Updater PHP include path','ui_path'=>'Licence UI PHP include path','icon_1x'=>'Plugin icon (128 × 128) URL','icon_2x'=>'Plugin icon (256 × 256) URL','banner_low'=>'Plugin banner (772 × 250) URL','banner_high'=>'Plugin banner (1544 × 500) URL'];
+        $labels=['vendor'=>'Vendor / namespace','software_slug'=>'UUPD software slug (must match EDD licensing)','type'=>'Software type','mode'=>'Licence UI display','menu_placement'=>'Licence page placement','menu_parent'=>'Parent admin menu','menu_slug'=>'Licence menu slug','return_path'=>'Existing page return path (admin-relative)','menu_title'=>'Admin menu title','page_title'=>'Page heading','updater_path'=>'Updater PHP include path','ui_path'=>'Licence UI PHP include path','icon_1x'=>'Plugin icon (128 × 128) URL','icon_2x'=>'Plugin icon (256 × 256) URL','banner_low'=>'Plugin banner (772 × 250) URL','banner_high'=>'Plugin banner (1544 × 500) URL'];
         $choices=['type'=>['plugin'=>'WordPress plugin','theme'=>'WordPress theme'],
             'mode'=>['both'=>'Both: admin page + inline box','menu'=>'Dedicated admin page only','inline'=>'Inline box only (existing page)'],
             'menu_placement'=>['submenu'=>'Create a submenu','top'=>'Create a top-level menu','existing'=>'Use an existing page (no new menu)']];
@@ -193,6 +238,7 @@ final class Stackless_EDD_UUPD_Bridge {
                     echo '<br><small>Choose an image from WordPress Media Library or paste a public HTTPS image URL. Leave empty to omit artwork.</small>';
                 }
             }
+            if ($field==='return_path') echo '<br><small>Example: admin.php?page=esp-example-setting-page#esp-licence. Use the real registered WordPress admin page; do not enter just the slug.</small>';
             if ($field==='software_slug') echo '<br><small>Must match the product software slug used by deploy.cfg. Saved here for code generation; it does not change the native EDD licensing slug.</small>';
             echo '</p>';
         }
@@ -218,14 +264,15 @@ final class Stackless_EDD_UUPD_Bridge {
                 const existing=mode==='inline'||place==='existing';
                 $('.stackless-edd-field[data-field="menu_placement"]').toggle(mode!=='inline');
                 $('.stackless-edd-field[data-field="menu_parent"]').toggle(place==='submenu' && mode!=='inline');
+                $('.stackless-edd-field[data-field="return_path"]').toggle(existing);
                 $('.stackless-edd-field[data-field="menu_title"],.stackless-edd-field[data-field="page_title"]').toggle(!existing);
-                $('#stackless_edd_uupd_menu_tip').text(existing ? 'Existing-page mode creates no menu. Enter the existing page slug; insert Part 3 in its callback.' : place==='top' ? 'A new top-level licence menu will be registered.' : 'A new submenu will appear beneath the selected parent.');
+                $('#stackless_edd_uupd_menu_tip').text(existing ? 'Existing-page mode creates no menu. Enter the complete admin-relative return path (including #anchor if needed) and insert Part 3 in the existing page callback.' : place==='top' ? 'A new top-level licence menu will be registered.' : 'A new submenu will appear beneath the selected parent.');
             }
             function refresh(){
                 const seq=++sequence;pending=true;$('.stackless-edd-copy').prop('disabled',true);$('.stackless-edd-copy-status').text('Refreshing…');
                 let data={action:'stackless_edd_uupd_preview',nonce:<?php echo wp_json_encode($nonce); ?>,download_id:<?php echo $id; ?>};
                 fields.forEach(k=>data[k]=field(k).val());
-                $.post(ajaxurl,data,function(r){if(seq!==sequence)return; if(r.success){['constants','bootloader','inline'].forEach(k=>field(k).val(r.data[k]||'')); $('.stackless-edd-copy-status').text('');}else{$('.stackless-edd-copy-status').text('Preview failed; do not copy stale code');}}).fail(function(){if(seq===sequence)$('.stackless-edd-copy-status').text('Preview failed; do not copy stale code');}).always(function(){if(seq===sequence){pending=false;$('.stackless-edd-copy').prop('disabled',false);}});
+                $.post(ajaxurl,data,function(r){if(seq!==sequence)return; if(r.success){['constants','bootloader','inline'].forEach(k=>field(k).val(r.data[k]||'')); $('.stackless-edd-copy-status').text('');}else{['constants','bootloader','inline'].forEach(k=>field(k).val(''));$('.stackless-edd-copy-status').text('Fix return path before copying');}}).fail(function(){if(seq===sequence)$('.stackless-edd-copy-status').text('Preview failed; do not copy stale code');}).always(function(){if(seq===sequence){pending=false;$('.stackless-edd-copy').prop('disabled',!$('#stackless_edd_uupd_bootloader').val() || $('#stackless_edd_uupd_bootloader').val().startsWith('// ERROR:'));}});
             }
             function update(){layout();clearTimeout(timer);timer=setTimeout(refresh,220);}
             fields.forEach(k=>field(k).on('input change',update));
@@ -285,7 +332,7 @@ final class Stackless_EDD_UUPD_Bridge {
         check_ajax_referer('stackless_edd_uupd_preview','nonce');$id=absint($_POST['download_id']??0);
         if(!$id||get_post_type($id)!=='download'||!current_user_can('edit_post',$id))wp_send_json_error('Not permitted',403);
         $p=[];foreach(self::fields() as $field)$p[$field]=sanitize_text_field(wp_unslash($_POST[$field]??''));
-        wp_send_json_success(self::loader_parts($id,$p['vendor'],$p['software_slug'],$p['type'],$p['mode'],$p['menu_parent'],$p['updater_path'],$p['ui_path'],$p['menu_placement'],$p['menu_slug'],$p['menu_title'],$p['page_title']));
+        wp_send_json_success(self::loader_parts($id,$p['vendor'],$p['software_slug'],$p['type'],$p['mode'],$p['menu_parent'],$p['updater_path'],$p['ui_path'],$p['menu_placement'],$p['menu_slug'],$p['menu_title'],$p['page_title'],$p['return_path']));
     }
     public static function version_artwork($data,$license,$download_id){return self::artwork($data,$download_id);}
     public static function artwork($data,$download_id){
@@ -293,7 +340,7 @@ final class Stackless_EDD_UUPD_Bridge {
         foreach(['icon_1x'=>['icons','1x'],'icon_2x'=>['icons','2x'],'banner_low'=>['banners','low'],'banner_high'=>['banners','high']] as $key=>$dest){$url=get_post_meta((int)$download_id,self::META_PREFIX.$key,true);if($url){if(!isset($data[$dest[0]])||!is_array($data[$dest[0]]))$data[$dest[0]]=[];$data[$dest[0]][$dest[1]]=esc_url_raw($url);}}
         return $data;
     }
-    private static function loader_parts($product_id, $vendor, $software_slug, $type, $mode, $menu_parent, $updater_path = 'inc/updater.php', $ui_path = 'inc/class-uupd-license-ui.php', $placement = 'submenu', $target_slug = '', $menu_title = '', $page_title = '') {
+    private static function loader_parts($product_id, $vendor, $software_slug, $type, $mode, $menu_parent, $updater_path = 'inc/updater.php', $ui_path = 'inc/class-uupd-license-ui.php', $placement = 'submenu', $target_slug = '', $menu_title = '', $page_title = '', $return_path = '') {
         $product = get_post($product_id);
         $name = $product ? $product->post_title : 'My Software';
         $slug = sanitize_title((string)$software_slug);
@@ -306,7 +353,22 @@ final class Stackless_EDD_UUPD_Bridge {
         // Inline-only never creates a menu. Existing-page mode also never creates a menu.
         if ($mode === 'inline') { $placement = 'existing'; }
         $menu_parent = self::safe_menu_parent($menu_parent);
+        // Keep any historic '#section' fragment separate from the menu slug.
+        $legacy_fragment = '';
+        if (strpos($target_slug, '#') !== false) {
+            list($target_slug, $legacy_fragment) = explode('#', $target_slug, 2);
+            $legacy_fragment = sanitize_title($legacy_fragment);
+        }
         $target_slug = sanitize_key($target_slug);
+        $return_path = trim((string)$return_path);
+        // Only admin-relative paths can be used; protect against external redirects and traversal.
+        if ($return_path !== '' && (!preg_match('~^(?:admin|options-general|tools|plugins|themes|users|index|upload|edit)\.php\?page=[a-zA-Z0-9_-]+(?:#[a-zA-Z0-9_-]+)?$~', $return_path) || strpos($return_path, '..') !== false)) {
+            $return_path = '';
+        }
+        if ($return_path === '' && $legacy_fragment !== '' && $target_slug !== '') {
+            // Migration for legacy entries that stored a fragment in Settings page slug.
+            $return_path = 'admin.php?page=' . $target_slug . '#' . $legacy_fragment;
+        }
         $menu_title = sanitize_text_field($menu_title);
         $page_title = sanitize_text_field($page_title);
         $resolved_parent = $placement === 'top' ? 'top_level' : $menu_parent;
@@ -320,7 +382,7 @@ final class Stackless_EDD_UUPD_Bridge {
             $const .= 'define( ' . $q($base . '_' . $key) . ', ' . $q($value) . " );\n";
         }
         $const .= "define( '" . $base . "_MAIN_FILE', __FILE__ ); // Plugin main file, or theme functions.php\n";
-        if (!$creates_menu && $target_slug === '') { $const .= '// ERROR: Set Target / new page slug in the Bridge before using this loader.\n'; }
+        if (!$creates_menu && $return_path === '') { $const .= '// ERROR: Set an existing page return path before using this loader.\n'; }
         $const .= 'define( ' . $q($base . '_MENU_SLUG') . ', ' . ($target_slug !== '' ? $q($target_slug) : ($creates_menu ? $base . "_VENDOR . '-' . " . $base . '_SLUG' : $q('REPLACE-WITH-EXISTING-PAGE-SLUG'))) . " );\n";
         $C = static function($key) use ($base) { return $base . '_' . $key; };
         $root = $type === 'theme' ? 'get_stylesheet_directory()' : '__DIR__';
@@ -328,6 +390,9 @@ final class Stackless_EDD_UUPD_Bridge {
         $metadata = $C('SERVER_BASE') . " . '/wp-json/uupd/v1/metadata'";
         $license_scope = $vendor . '/' . $slug;
         $boot = "// Initialization: paste below the constants in the same PHP file.\n";
+        if (!$creates_menu && $return_path === '') {
+            return ['constants'=>'', 'bootloader'=>'', 'inline'=>''];
+        }
         $boot .= "// Guard against missing constants when Part 1 was not copied or was regenerated.\n";
         foreach (['VENDOR'=>$vendor,'VERSION'=>(string)get_post_meta($product_id, '_stackless_edd_sl_version', true) ?: '1.0.0','ITEM_NUMBER'=>(int)$product_id,'FRIENDLY_NAME'=>$name,'SLUG'=>$slug,'SERVER_BASE'=>$site] as $key=>$value) {
             $constant = $C($key);
@@ -346,23 +411,13 @@ final class Stackless_EDD_UUPD_Bridge {
         $boot .= "        'metadata_base' => " . $metadata . ",\n";
         $boot .= "        'menu_parent' => " . ($creates_menu ? $q($resolved_parent) : 'false') . ",\n";
         $boot .= "        'menu_slug' => " . $C('MENU_SLUG') . ",\n";
+        if (!$creates_menu && $return_path !== '') {
+            $boot .= "        'return_url' => admin_url( " . $q($return_path) . " ),\n";
+        }
         $boot .= "        'page_title' => " . ($page_title !== '' ? $q($page_title) : $C('FRIENDLY_NAME') . " . ' License'") . ",\n";
         $boot .= "        'menu_title' => " . ($menu_title !== '' ? $q($menu_title) : $C('FRIENDLY_NAME') . " . ' License'") . ",\n";
         $boot .= "        'capability' => 'manage_options',\n";
         $boot .= "    ] );\n\n";
-        if (!$creates_menu && !in_array($menu_parent, ['options-general.php', ''], true)) {
-            // License UI defaults inline links to options-general.php. For a custom
-            // parent, suppress only this product's built-in notice and replace it.
-            $scope_filter = 'uupd/license_ui/show_notice/' . $vendor . '/' . $slug;
-            $boot .= "    add_filter( " . $q($scope_filter) . ", static function ( \$show, \$license ) {\n";
-            $boot .= "        if ( ! \$show || ( \$license['status'] ?? '' ) === 'active' ) { return \$show; }\n";
-            $boot .= "        add_action( 'admin_notices', static function () {\n";
-            $boot .= "            if ( ! current_user_can( 'manage_options' ) ) { return; }\n";
-            $boot .= "            \$url = add_query_arg( 'page', " . $C('MENU_SLUG') . ", admin_url( " . $q(in_array($menu_parent, ['tools.php','themes.php','plugins.php','users.php','index.php','upload.php','edit.php','edit.php?post_type=download'], true) ? $menu_parent : 'admin.php') . " ) );\n";
-            $boot .= "            echo '<div class=\"notice notice-warning\"><p>' . esc_html( sprintf( 'Please activate your %s license to enable updates and support.', " . $C('FRIENDLY_NAME') . " ) ) . ' <a class=\"button button-primary\" href=\"' . esc_url( \$url ) . '\">Activate License</a></p></div>';\n";
-            $boot .= "        } );\n";
-            $boot .= "        return false;\n    }, 10, 2 );\n\n";
-        }
         $boot .= "    \\UUPD\\V2\\UUPD_Updater_V2::register( [\n";
         $boot .= "        'vendor' => " . $C('VENDOR') . ",\n";
         $boot .= "        'slug' => " . $C('SLUG') . ",\n";
@@ -370,17 +425,18 @@ final class Stackless_EDD_UUPD_Bridge {
         $boot .= "        'version' => " . $C('VERSION') . ",\n";
         $boot .= "        'mode' => 'json',\n";
         $boot .= "        'server' => " . $metadata . ",\n";
+        $boot .= "        'license_key_transport' => 'header',\n";
         $boot .= $type === 'theme' ? "        'real_slug' => " . $C('SLUG') . ",\n" : "        'plugin_file' => plugin_basename( " . $C('MAIN_FILE') . " ),\n";
         $boot .= "    ] );\n";
         $boot .= "}, 1 );\n\n";
-        // Remove sensitive query key while preserving it for the UUPD request header.
+        // Add request context while preserving either configured key transport.
         $boot .= "add_filter( 'uupd/request_params/" . $license_scope . "', static function ( \$params ) {\n";
-        $boot .= "    unset( \$params['key'] );\n    \$params['domain'] = home_url( '/' );\n    \$params['item_id'] = " . $C('ITEM_NUMBER') . ";\n    return \$params;\n} );\n";
+        $boot .= "    \$params['domain'] = home_url( '/' );\n    \$params['item_id'] = " . $C('ITEM_NUMBER') . ";\n    return \$params;\n} );\n";
         $boot .= "add_filter( 'uupd/request_headers/" . $license_scope . "', static function ( \$headers ) {\n";
         $boot .= "    \$option = get_option( 'uupd_license_' . sanitize_key( " . $C('VENDOR') . " . '__' . str_replace( '-', '_', " . $C('SLUG') . " ) ), [] );\n";
         $boot .= "    \$constant_name = 'UUPD_' . strtoupper( str_replace( '-', '_', " . $C('VENDOR') . " ) ) . '_' . strtoupper( str_replace( '-', '_', " . $C('SLUG') . " ) ) . '_LICENSE_KEY';\n";
         $boot .= "    \$key = defined( \$constant_name ) ? constant( \$constant_name ) : ( \$option['license_key'] ?? '' );\n";
-        $boot .= "    if ( is_string( \$key ) && \$key !== '' && ( \$option['status'] ?? '' ) === 'active' ) { \$headers['X-UUPD-License-Key'] = \$key; }\n";
+        $boot .= "    if ( is_string( \$key ) && \$key !== '' && ( \$option['status'] ?? '' ) === 'active' ) { \$headers['Authorization'] = 'Bearer ' . \$key; }\n";
         $boot .= "    return \$headers;\n} );\n";
         $inline = "\\UUPD\\UI\\License\\V1\\UUPD_License_UI::render_box_for( " . $C('SLUG') . ", " . $C('VENDOR') . " );\n";
         return ['constants'=>$const, 'bootloader'=>$boot, 'inline'=>$inline];

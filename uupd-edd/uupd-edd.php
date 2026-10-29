@@ -2,7 +2,7 @@
 /**
  * Plugin Name: UUPD > EPD
  * Description: Adds UUPD-compatible license and metadata endpoints on top of Easy Digital Downloads Software Licensing
- * Version: 1.1
+ * Version: 1.2
  * Author:  Reallyusefulplugins.com
  * Author URI: https://reallyusefulplugins.com
  * Requires PHP: 7.4
@@ -12,6 +12,57 @@
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
+
+if ( ! function_exists( 'uupd_compat_metadata_key' ) ) {
+    function uupd_compat_metadata_key( $request = null ) {
+        $authorization = $request instanceof WP_REST_Request ? $request->get_header( 'authorization' ) : '';
+        if ( '' === $authorization && isset( $_SERVER['HTTP_AUTHORIZATION'] ) ) { $authorization = wp_unslash( $_SERVER['HTTP_AUTHORIZATION'] ); }
+        if ( preg_match( '/^Bearer\s+(.+)$/i', trim( (string) $authorization ), $matches ) ) { return trim( $matches[1] ); }
+        $query = $request instanceof WP_REST_Request ? $request->get_query_params() : $_GET;
+        if ( ( isset( $query['key'] ) || isset( $query['license_key'] ) ) && ! uupd_allow_query_license_key() ) { return ''; }
+        if ( $request instanceof WP_REST_Request ) { return (string) ( $request->get_param( 'key' ) ?: $request->get_param( 'license_key' ) ); }
+        return isset( $_GET['key'] ) ? (string) wp_unslash( $_GET['key'] ) : ( isset( $_GET['license_key'] ) ? (string) wp_unslash( $_GET['license_key'] ) : '' );
+    }
+}
+
+if ( ! function_exists( 'uupd_allow_query_license_key' ) ) {
+    function uupd_allow_query_license_key() {
+        if ( defined( 'UUPD_ALLOW_QUERY_LICENSE_KEY' ) ) {
+            return (bool) UUPD_ALLOW_QUERY_LICENSE_KEY;
+        }
+        return (bool) apply_filters( 'uupd_allow_query_license_key', '1' === (string) get_option( 'uupd_allow_query_license_key', '1' ) );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_option() {
+        register_setting( 'uupd_compat_transport', 'uupd_allow_query_license_key', [
+            'type' => 'string', 'default' => '1', 'sanitize_callback' => static function ( $value ) { return '1' === (string) $value ? '1' : '0'; },
+        ] );
+    }
+}
+if ( ! function_exists( 'uupd_compat_register_transport_settings' ) ) {
+    function uupd_compat_register_transport_settings() {
+        add_options_page( 'UUPD Key Transport', 'UUPD Key Transport', 'manage_options', 'uupd-key-transport', 'uupd_compat_render_transport_settings' );
+    }
+}
+if ( ! function_exists( 'uupd_compat_render_transport_settings' ) ) {
+    function uupd_compat_render_transport_settings() {
+        if ( ! current_user_can( 'manage_options' ) ) { return; }
+        ?>
+        <div class="wrap"><h1><?php esc_html_e( 'UUPD Key Transport' ); ?></h1>
+        <p><?php esc_html_e( 'Legacy URL query keys are enabled by default for backwards compatibility. Disable them after clients have moved to Authorization: Bearer.' ); ?></p>
+        <form method="post" action="options.php">
+            <?php settings_fields( 'uupd_compat_transport' ); ?>
+            <input type="hidden" name="uupd_allow_query_license_key" value="0">
+            <label><input type="checkbox" name="uupd_allow_query_license_key" value="1" <?php checked( get_option( 'uupd_allow_query_license_key', '1' ), '1' ); ?>> <?php esc_html_e( 'Accept licence keys from the legacy key query parameter' ); ?></label>
+            <?php submit_button(); ?>
+        </form></div>
+        <?php
+    }
+}
+if ( false === has_action( 'admin_init', 'uupd_compat_register_transport_option' ) ) { add_action( 'admin_init', 'uupd_compat_register_transport_option' ); }
+if ( false === has_action( 'admin_menu', 'uupd_compat_register_transport_settings' ) ) { add_action( 'admin_menu', 'uupd_compat_register_transport_settings' ); }
+
 
 if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 
@@ -86,7 +137,7 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 			}
 
 			$slug   = isset( $_GET['slug'] ) ? sanitize_key( wp_unslash( $_GET['slug'] ) ) : '';
-			$key    = isset( $_GET['key'] ) ? self::sanitize_license_key( wp_unslash( $_GET['key'] ) ) : '';
+			$key    = uupd_compat_metadata_key();
 			$domain = isset( $_GET['domain'] ) ? sanitize_text_field( wp_unslash( $_GET['domain'] ) ) : '';
 			$allow_prerelease = ! empty( $_GET['allow_prerelease'] );
 			$release_channel  = isset( $_GET['release_channel'] )
@@ -213,7 +264,7 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 
 
 			$slug   = sanitize_key( (string) $request->get_param( 'slug' ) );
-			$key    = self::sanitize_license_key( (string) $request->get_param( 'key' ) );
+			$key    = self::sanitize_license_key( uupd_compat_metadata_key( $request ) );
 			$domain = sanitize_text_field( (string) $request->get_param( 'domain' ) );
 			$allow_prerelease = (bool) $request->get_param( 'allow_prerelease' );
 			$release_channel  = sanitize_key( (string) $request->get_param( 'release_channel' ) );
@@ -981,7 +1032,7 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 			$cfg = array_merge( self::loader_settings( $post_id ), $overrides );
 			if ( 'inline' === $cfg['mode'] ) { $cfg['placement'] = 'existing'; }
 			$creates_menu = 'inline' !== $cfg['mode'] && 'existing' !== $cfg['placement'];
-			$menu_slug = $cfg['menu_slug'] ?: ( $creates_menu ? $vendor . '-' . $slug : 'REPLACE-WITH-EXISTING-PAGE-SLUG' );
+			$menu_slug = $cfg['menu_slug'] ?: $vendor . '-' . $slug;
 			$menu_parent = $creates_menu ? ( 'top' === $cfg['placement'] ? 'top_level' : $cfg['menu_parent'] ) : false;
 			$prefix = self::build_bootloader_constant_prefix( $vendor, $slug, $post_id );
 			$server = apply_filters( 'edd_uupd_compat/bootloader_server_base', home_url( '/' ), $post_id, $slug, $vendor );
@@ -1022,6 +1073,16 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 			$lines[] = "        'plugin_name'    => {$c_name},";
 			$lines[] = "        'menu_parent'    => " . ( $menu_parent === false ? 'false' : "'" . $esc( $menu_parent ) . "'" ) . ",";
 			$lines[] = "        'menu_slug'      => {$c_menu},";
+            if ( ! $creates_menu ) {
+                $return_path = ltrim( (string) $cfg['return_path'], '/' );
+                // Fail visibly rather than silently emitting a broken redirect.
+                if ( '' === $return_path || ! preg_match( '~^(admin|options-general|tools|themes|plugins)\.php\?page=[a-zA-Z0-9_\-]+(?:#[a-zA-Z0-9_\-]+)?$~', $return_path ) ) {
+                    $lines[] = "        // REQUIRED: Set return_url to the existing registered WordPress admin page.";
+                    $lines[] = "        'return_url'     => admin_url( 'plugins.php' ), // INVALID embedded destination: configure return path in generator";
+                } else {
+                    $lines[] = "        'return_url'     => admin_url( '" . $esc( $return_path ) . "' ),";
+                }
+            }
 			$lines[] = "        'page_title'     => " . ( $cfg['page_title'] !== '' ? "'" . $esc( $cfg['page_title'] ) . "'" : "{$c_name} . ' License'" ) . ",";
 			$lines[] = "        'menu_title'     => " . ( $cfg['menu_title'] !== '' ? "'" . $esc( $cfg['menu_title'] ) . "'" : "{$c_name} . ' License'" ) . ",";
 			$lines[] = "        'capability'     => 'manage_options',";
@@ -1035,6 +1096,7 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 			$lines[] = "        'version'     => {$c_version},";
 			$lines[] = "        'mode'        => 'json',";
 			$lines[] = "        'server'      => {$c_server} . 'wp-json/uupd/v1/metadata',";
+		$lines[] = "        'license_key_transport' => 'header',";
 			$lines[] = "    ]);";
 			$lines[] = "}, 1 );";
 
@@ -1061,7 +1123,7 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 				wp_send_json_error( 'Permission denied.', 403 );
 			}
 			$overrides = [];
-			foreach ( [ 'mode', 'placement', 'menu_parent', 'menu_slug', 'menu_title', 'page_title', 'updater_path', 'ui_path' ] as $key ) {
+			foreach ( [ 'mode', 'placement', 'menu_parent', 'menu_slug', 'menu_title', 'page_title', 'return_path', 'updater_path', 'ui_path' ] as $key ) {
 				$field = 'edd_uupd_loader_' . $key;
 				if ( isset( $_POST[ $field ] ) && is_string( $_POST[ $field ] ) ) {
 					$value = self::sanitize_loader_value( $key, wp_unslash( $_POST[ $field ] ) );
@@ -1078,7 +1140,7 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
 		protected static function loader_settings( $post_id ) {
 			$defaults = [
 				'mode' => 'both', 'placement' => 'top', 'menu_parent' => 'options-general.php',
-				'menu_slug' => '', 'menu_title' => '', 'page_title' => '',
+				'menu_slug' => '', 'menu_title' => '', 'page_title' => '', 'return_path' => '',
 				'updater_path' => 'inc/updater.php', 'ui_path' => 'inc/class-uupd-license-ui.php',
 			];
 			foreach ( $defaults as $key => $default ) {
@@ -1302,7 +1364,8 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
     var isInline = mode === 'inline', existing = placement === 'existing' || isInline;
     $('#edd_uupd_loader_placement').closest('p').toggle(!isInline);
     $('[data-uupd-field="menu_parent"]').toggle(!existing && placement === 'submenu');
-    $('[data-uupd-field="menu_slug"]').show();
+    $('[data-uupd-field="menu_slug"]').toggle(!existing);
+    $('[data-uupd-field="return_path"]').toggle(existing);
     $('[data-uupd-field="menu_title"],[data-uupd-field="page_title"]').toggle(!existing);
     $('#edd-uupd-loader-warning').toggle(existing);
     $('#edd-uupd-inline-preview').toggle(mode !== 'menu');
@@ -1321,8 +1384,8 @@ if ( ! class_exists( 'EDD_UUPD_Compatibility_Layer' ) ) {
       $('#edd-uupd-bootloader-output').val(response.data.bootloader);
       $('#edd-uupd-inline-output').val(response.data.inline);
       var mode = $('#edd_uupd_loader_mode').val(), placement = $('#edd_uupd_loader_placement').val();
-      if((mode === 'inline' || placement === 'existing') && !$('#edd_uupd_loader_menu_slug').val().trim()){
-        $('#edd-uupd-preview-status').text('Set an existing settings page slug before using this snippet.');
+      if((mode === 'inline' || placement === 'existing') && !$('#edd_uupd_loader_return_path').val().trim()){
+        $('#edd-uupd-preview-status').text('Set the existing settings page admin path before using this snippet.');
       }else{$('#edd-uupd-preview-status').text('Preview updated (not yet saved).');}
     }).fail(function(xhr,status){if(status !== 'abort') $('#edd-uupd-preview-status').text('Could not generate preview. Check your PHP include paths.');});
   }
@@ -1560,7 +1623,8 @@ JS;
 				}
 				$text_fields = [
 					'menu_parent' => 'Parent menu slug (e.g. options-general.php, tools.php or custom parent)',
-					'menu_slug' => 'Existing / new page slug (required when reusing a page)',
+					'menu_slug' => 'New licence menu slug (optional; automatically generated)',
+                    'return_path' => 'Existing settings page admin path (required; e.g. admin.php?page=my-plugin or options-general.php?page=my-plugin)',
 					'menu_title' => 'New menu title (optional)',
 					'page_title' => 'New page title (optional)',
 					'updater_path' => 'Updater include path (relative to plugin root)',
@@ -1569,7 +1633,7 @@ JS;
 				foreach ( $text_fields as $key => $label ) { ?>
 					<p data-uupd-field="<?php echo esc_attr( $key ); ?>"><label for="edd_uupd_loader_<?php echo esc_attr( $key ); ?>"><strong><?php echo esc_html( $label ); ?></strong></label><input class="widefat" type="text" id="edd_uupd_loader_<?php echo esc_attr( $key ); ?>" name="edd_uupd_loader_<?php echo esc_attr( $key ); ?>" value="<?php echo esc_attr( $cfg[$key] ); ?>" /></p>
 				<?php } ?>
-				<p class="description" id="edd-uupd-loader-warning">Inline/existing-page mode does not create a menu. Enter the exact registered settings page slug and insert the inline snippet into that page's rendering callback. Menu-only mode does not need the inline snippet.</p>
+				<p class="description" id="edd-uupd-loader-warning">Inline/existing-page mode does not create a menu. Enter the existing admin path (including page=slug) and insert the inline snippet into that page's rendering callback. Menu-only mode does not need the inline snippet.</p>
 				<div id="edd-uupd-loader-preview" data-post-id="<?php echo esc_attr( $post->ID ); ?>" data-nonce="<?php echo esc_attr( wp_create_nonce( 'edd_uupd_loader_preview_' . $post->ID ) ); ?>" style="margin-top:18px;">
 					<h3>Live generated code preview</h3>
 					<p class="description">Updates as settings change. Preview changes are not saved until you update this Download. Product name, version, slug and global vendor reflect saved values until then.</p>
@@ -1675,7 +1739,7 @@ JS;
 				return;
 			}
 
-			$loader_options = [ 'mode', 'placement', 'menu_parent', 'menu_slug', 'menu_title', 'page_title', 'updater_path', 'ui_path' ];
+			$loader_options = [ 'mode', 'placement', 'menu_parent', 'menu_slug', 'menu_title', 'page_title', 'return_path', 'updater_path', 'ui_path' ];
 			foreach ( $loader_options as $key ) {
 				$field = 'edd_uupd_loader_' . $key;
 				if ( ! isset( $_POST[ $field ] ) || ! is_string( $_POST[ $field ] ) ) { continue; }

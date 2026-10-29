@@ -6,7 +6,7 @@
  * Tested up to:      6.8.2
  * Requires at least: 6.5
  * Requires PHP:      8.0
- * Version:           0.9
+ * Version:           0.10
  * Author:            Nathan Foley
  * Author URI:        https://reallyusefulplugins.com
  * License:           GPL2
@@ -79,6 +79,7 @@ add_action( 'plugins_loaded', function() {
         'name'             => UUPD_RUP_TEST_FRIENDLY_NAME,
         'version'          => UUPD_RUP_TEST_VERSION,
         'server'           => UUPD_RUP_TEST_SERVER_BASE,
+        'license_key_transport' => 'header',
         'allow_prerelease' => $allow_prerelease,
         'release_channel'  => $release_channel,
     ]);
